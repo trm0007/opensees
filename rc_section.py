@@ -304,3 +304,46 @@ def draw_circular_rc_section10(sec_tag, core_tag, cover_tag, steel_tag,
     
     # plt.show()
     return fig, ax
+# Example call with parameters from the TCL file
+draw_circular_rc_section10(
+    sec_tag=1, 
+    core_tag=1, 
+    cover_tag=2, 
+    steel_tag=3,
+    D_Sec=60,           # 5 ft diameter converted to inches
+    cover_Sec=5,        # 5 inches cover
+    num_Bars_Sec=16,    # 16 bars
+    bar_dia_Sec=1.69,   # equivalent to 2.25 sq in area
+    ri=0.0,             # solid section
+    nf_Core_R=8,
+    nf_Core_T=8,
+    nf_Cover_R=4,
+    nf_Cover_T=8
+)
+
+# Example call for a hollow circular section
+draw_circular_rc_section10(
+    sec_tag=1, 
+    core_tag=1, 
+    cover_tag=2, 
+    steel_tag=3,
+    D_Sec=60,           # 5 ft diameter converted to inches
+    cover_Sec=5,        # 5 inches cover
+    num_Bars_Sec=16,    # 16 bars
+    bar_dia_Sec=1.69,   # equivalent to 2.25 sq in area
+    ri=15.0,            # hollow section with inner radius of 15 inches
+    nf_Core_R=8,
+    nf_Core_T=8,
+    nf_Cover_R=4,
+    nf_Cover_T=8
+)
+
+draw_rc_section10(
+    sec_tag=1, core_tag=1, cover_tag=2, steel_tag=3,
+    H=600, B=300, cover_H=40, cover_B=40, offset=25,
+    n_bars_top=3, dia_top=16,
+    n_bars_bot=4, dia_bot=20,
+    n_bars_secondary_top=5, dia_sec_top=16,
+    n_bars_secondary_bot=6, dia_sec_bot=25,
+    n_bars_int=6, dia_int=16
+)
