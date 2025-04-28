@@ -965,7 +965,7 @@ def create_proper_mesh_for_closed_area_3d1(points, predefined_points, num_x_div=
         }
 
     # Save to JSON file
-    with open('mesh_data_with_predefined_points.json', 'w') as f:
+    with open(f'lamb/mesh_data_with_predefined_points{numbering}.json', 'w') as f:
         json.dump(output_data, f, indent=4)
 
     return output_data
