@@ -1,28 +1,14 @@
 
 import json
-import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 from matplotlib.patches import Polygon
 from matplotlib.collections import PatchCollection
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection, Path3DCollection
-from shapely.geometry import Polygon as ShapelyPolygon
-import matplotlib.patches as patches
-
-
-
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-
-
-import matplotlib.pyplot as plt
-import numpy as np
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from shapely.geometry import Polygon as ShapelyPolygon, MultiPolygon
-import matplotlib.patches as mpatches
-
-
-
 from shapely.ops import triangulate
+
 
 
 def add_new_shells(mesh_elements, node_names, add_shell):
@@ -1059,12 +1045,7 @@ def create_shell_mesh():
                     print(f"# Warning: Element {elem_name} has {len(node_tags)} nodes - skipped")
             else:
                 print(f"# Warning: Element {elem_name} is missing nodes - skipped")
-import numpy as np
-from shapely.geometry import Polygon as ShapelyPolygon, MultiPolygon
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-import matplotlib.patches as mpatches
-import json
+
 
 # Create dictionaries for adding and removing shells (with corrected spelling)
 add_shell = {
