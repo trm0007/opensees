@@ -24,44 +24,7 @@ import matplotlib.patches as mpatches
 
 from shapely.ops import triangulate
 
-# Function to add new shells (with corrected spelling)
-def add_new_shells(shell_dict, predefined_points, existing_elements=None, numbering=1):
-    if existing_elements is None:
-        existing_elements = {"elements": {}, "nodes": {}}
-    
-    for shell_name, points in shell_dict.items():
-        # Get coordinates for the points
-        point_coords = [predefined_points[p] for p in points if p in predefined_points]
-        
-        if len(point_coords) >= 3:  # Need at least 3 points to form a shell
-            # Create the shell using the existing function
-            new_shell = create_proper_mesh_for_closed_area_3d(
-                point_coords, 
-                predefined_points,
-                numbering=numbering
-            )
-            
-            # Merge with existing elements
-            existing_elements["elements"].update(new_shell["elements"])
-            existing_elements["nodes"].update(new_shell["nodes"])
-            
-            numbering += 1  # Increment numbering for next shell
-    
-    return existing_elements
 
-# Function to remove shells (with corrected spelling)
-def remove_shells(shell_names, elements_dict):
-    # Convert shell names to element names (assuming shell names match element prefixes)
-    elements_to_remove = []
-    for shell_name in shell_names:
-        elements_to_remove.extend([e for e in elements_dict["elements"] if e.startswith(shell_name)])
-    
-    # Remove the elements
-    for elem in elements_to_remove:
-        if elem in elements_dict["elements"]:
-            del elements_dict["elements"][elem]
-    
-    return elements_dict
 
 
 def create_proper_mesh_for_closed_area_3d(points, predefined_points, num_x_div=4, num_y_div=4, numbering=1):
