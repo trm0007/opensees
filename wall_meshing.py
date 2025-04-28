@@ -970,7 +970,95 @@ def create_proper_mesh_for_closed_area_3d1(points, predefined_points, num_x_div=
 
     return output_data
 
+def create_shell_mesh():
+    # Load the single structure data file
+    structure_file = 'lamb/structure_data_json.json'
+    if not os.path.exists(structure_file):
+        print(f"Error: Structure file {structure_file} not found")
+        return
+    
+    with open(structure_file, 'r') as f:
+        structure_data = json.load(f)
+        structure_nodes = {f"n{node['id']}": node for node in structure_data['nodes']}
+    
+    # Find all mesh files matching the pattern
+    mesh_files = []
+    for filename in os.listdir('lamb'):
+        match = re.match(r'mesh_data_with_predefined_points(\d+)\.json', filename)
+        if match:
+            numbering = int(match.group(1))
+            mesh_files.append((numbering, os.path.join('lamb', filename)))
+    
+    if not mesh_files:
+        print("No mesh data files found in lamb/ directory")
+        return
+    
+    # Process each mesh file with the structure data
+    for numbering, mesh_file in mesh_files:
+        print(f"\n# Processing mesh file {mesh_file} with numbering {numbering}")
+        
+        # Load mesh data
+        with open(mesh_file, 'r') as f:
+            mesh_data = json.load(f)
+        
+        print("\n# Creating Nodes")
+        # Create all nodes from the mesh data
+        mesh_node_ids = set()
+        for node_name, node_info in mesh_data['nodes'].items():
+            node_id = node_info['id']
+            x, y, z = node_info['coordinates']
+            ops.node(node_id, x, y, z)
+            mesh_node_ids.add(node_id)
+            print(f"ops.node({node_id}, {x:.3f}, {y:.3f}, {z:.3f})")
+        
+        print("\n# Creating Shell Elements")
+        # Create all shell elements
+        for elem_name, elem_info in mesh_data['elements'].items():
+            elem_id = elem_info['id']
+            node_tags = []
+            
+            # Get node IDs for this element
+            for node_ref in elem_info['nodes']:
+                if node_ref.startswith('N'):  # Regular mesh node
+                    node_id = int(node_ref[1:])
+                    node_tags.append(node_id)
+                elif node_ref.startswith('P'):  # Predefined point
+                    # Find in mesh nodes by coordinate matching
+                    target_coords = elem_info['coordinates'][elem_info['nodes'].index(node_ref)]
+                    found = False
+                    for n_id, n_data in mesh_data['nodes'].items():
+                        if n_data['coordinates'] == target_coords:
+                            node_tags.append(n_data['id'])
+                            found = True
+                            break
+                    # Check if it matches a structure node
+                    for s_node in structure_nodes.values():
+                        if (abs(s_node['x'] - target_coords[0]) < 1e-6 and
+                            abs(s_node['y'] - target_coords[1]) < 1e-6 and
+                            abs(s_node['z'] - target_coords[2]) < 1e-6):
+                            node_tags.append(s_node['id'])
+                            found = True
+                            break
 
+                    if not found:
+                        print(f"# Warning: Could not find node for reference {node_ref} in element {elem_name}")
+                elif node_ref.startswith('n'):  # Predefined structure node
+                    node_id = int(node_ref[1:])
+                    node_tags.append(node_id)
+            
+            # Create the appropriate shell element if we have all nodes
+            if len(node_tags) == len(elem_info['nodes']):
+                secTag = 1  # Replace with your actual section tag
+                if len(node_tags) == 4:
+                    ops.element('ShellMITC4', elem_id, *node_tags, secTag)
+                    print(f"ops.element('ShellMITC4', {elem_id}, {', '.join(map(str, node_tags))}, {secTag})")
+                elif len(node_tags) == 3:
+                    ops.element('ShellDKGT', elem_id, *node_tags, secTag)
+                    print(f"ops.element('ShellDKGT', {elem_id}, {', '.join(map(str, node_tags))}, {secTag})")
+                else:
+                    print(f"# Warning: Element {elem_name} has {len(node_tags)} nodes - skipped")
+            else:
+                print(f"# Warning: Element {elem_name} is missing nodes - skipped")
 import numpy as np
 from shapely.geometry import Polygon as ShapelyPolygon, MultiPolygon
 import matplotlib.pyplot as plt
@@ -1058,3 +1146,7 @@ mesh_elements = create_proper_mesh_for_closed_area_3d(inclined_points, predefine
 # print(mesh_elements)
 # # Complex inclined element
 mesh_elements = create_proper_mesh_for_closed_area_3d(complex_inclined_points, predefined_points)
+
+
+
+create_shell_mesh()
