@@ -120,9 +120,396 @@ def remove_shells(mesh_elements, remove_shell):
     return final_mesh
 
 
-
-
 def create_proper_mesh_for_closed_area_3d(points, predefined_points, num_x_div=4, num_y_div=4, numbering=1):
+    # Calculate ID offsets based on numbering parameter
+    node_id_offset = 10000 + (numbering - 1) * 1000
+    element_id_offset = 10000 + (numbering - 1) * 1000
+    
+    # Calculate the plane equation ax + by + cz + d = 0
+    p0, p1, p2 = np.array(points[0]), np.array(points[1]), np.array(points[2])
+    v1 = p1 - p0
+    v2 = p2 - p0
+    normal = np.cross(v1, v2)
+    a, b, c = normal
+    d = -np.dot(normal, p0)
+    
+    # Find two orthogonal vectors in the plane (basis vectors)
+    if abs(a) > 0.1 or abs(b) > 0.1:
+        u = np.array([b, -a, 0])  # Orthogonal to normal in XY plane
+    else:
+        u = np.array([0, c, -b])  # Orthogonal to normal in YZ plane
+    u = u / np.linalg.norm(u)
+    v = np.cross(normal, u)
+    v = v / np.linalg.norm(v)
+    
+    # Function to project 3D points to 2D plane coordinates
+    def project_to_plane(points_3d):
+        projected = []
+        for p in points_3d:
+            vec = p - p0
+            x_proj = np.dot(vec, u)
+            y_proj = np.dot(vec, v)
+            projected.append((x_proj, y_proj))
+        return projected
+    
+    # Function to ensure counter-clockwise ordering
+    def ensure_counter_clockwise(nodes, coords):
+        if len(nodes) < 3:
+            return nodes, coords
+        
+        # Calculate normal vector for the polygon
+        if len(nodes) == 3:
+            # For triangles
+            v1 = np.array(coords[1]) - np.array(coords[0])
+            v2 = np.array(coords[2]) - np.array(coords[0])
+            cross = np.cross(v1, v2)
+        else:
+            # For polygons with more than 3 points
+            # Use Newell's method to compute normal
+            normal = np.zeros(3)
+            for i in range(len(coords)):
+                current = np.array(coords[i])
+                next_point = np.array(coords[(i+1)%len(coords)])
+                normal[0] += (current[1] - next_point[1]) * (current[2] + next_point[2])
+                normal[1] += (current[2] - next_point[2]) * (current[0] + next_point[0])
+                normal[2] += (current[0] - next_point[0]) * (current[1] + next_point[1])
+            cross = normal
+        
+        # Project onto plane normal to check winding
+        dot_product = np.dot(cross, normal)
+        
+        # If winding is clockwise (dot product negative), reverse the order
+        if dot_product < 0:
+            nodes = nodes[::-1]
+            coords = coords[::-1]
+        
+        return nodes, coords
+    
+    # Project original points to 2D plane coordinates
+    points_2d = project_to_plane(points)
+    main_poly = ShapelyPolygon(points_2d)
+    
+    # Get bounding box of the polygon in plane coordinates
+    min_x, min_y, max_x, max_y = main_poly.bounds
+    
+    # Calculate step sizes
+    x_step = (max_x - min_x) / num_x_div
+    y_step = (max_y - min_y) / num_y_div
+    
+    # Create dictionaries to store mesh and node information
+    mesh_elements = {}
+    node_positions = {}  # Stores {internal_id: (actual_node_id, coordinates)}
+    node_counter = 1
+    mesh_counter = 1
+    
+    # First pass: create rectangular elements clipped to the polygon
+    for i in range(num_x_div):
+        for j in range(num_y_div):
+            x1 = min_x + i * x_step
+            x2 = x1 + x_step
+            y1 = min_y + j * y_step
+            y2 = y1 + y_step
+            
+            # Create rectangle in plane coordinates and clip it
+            rect = ShapelyPolygon([(x1, y1), (x2, y1), (x2, y2), (x1, y2)])
+            clipped = rect.intersection(main_poly)
+            
+            if clipped.is_empty or not isinstance(clipped, (ShapelyPolygon, MultiPolygon)):
+                continue
+                
+            if isinstance(clipped, MultiPolygon):
+                polygons = list(clipped.geoms)
+            else:
+                polygons = [clipped]
+            
+            for poly in polygons:
+                if not isinstance(poly, ShapelyPolygon):
+                    continue
+                    
+                ext_coords = list(poly.exterior.coords)
+                
+                if len(ext_coords) >= 3:  # At least 3 points needed for a polygon
+                    # Convert back to 3D coordinates
+                    node_indices = []
+                    coords_3d = []
+                    for coord in ext_coords[:-1]:
+                        x_proj, y_proj = coord
+                        point_3d = p0 + x_proj * u + y_proj * v
+                        
+                        # Check if this 3D point already exists
+                        found = False
+                        for internal_id, (existing_node_id, existing_point) in node_positions.items():
+                            if np.linalg.norm(point_3d - existing_point) < 1e-6:
+                                node_indices.append(existing_node_id)
+                                coords_3d.append(existing_point)
+                                found = True
+                                break
+                        
+                        if not found:
+                            node_id = node_counter + node_id_offset
+                            node_positions[node_counter] = (node_id, point_3d)
+                            node_indices.append(node_id)
+                            coords_3d.append(point_3d)
+                            node_counter += 1
+                    
+                    # Ensure counter-clockwise ordering
+                    node_indices, coords_3d = ensure_counter_clockwise(node_indices, coords_3d)
+                    
+                    # Handle polygons with more than 4 points by triangulating them
+                    if len(node_indices) > 4:
+                        # Convert to 2D coordinates for triangulation
+                        poly_2d = ShapelyPolygon(ext_coords)
+                        triangles = triangulate(poly_2d)
+                        
+                        for triangle in triangles:
+                            tri_coords = list(triangle.exterior.coords)
+                            tri_node_indices = []
+                            tri_coords_3d = []
+                            
+                            for coord in tri_coords[:-1]:
+                                x_proj, y_proj = coord
+                                point_3d = p0 + x_proj * u + y_proj * v
+                                
+                                # Find or create nodes for this triangle
+                                found = False
+                                for nid, coord_3d in zip(node_indices, coords_3d):
+                                    if np.linalg.norm(point_3d - coord_3d) < 1e-6:
+                                        tri_node_indices.append(nid)
+                                        tri_coords_3d.append(coord_3d)
+                                        found = True
+                                        break
+                                
+                                if not found:
+                                    node_id = node_counter + node_id_offset
+                                    node_positions[node_counter] = (node_id, point_3d)
+                                    tri_node_indices.append(node_id)
+                                    tri_coords_3d.append(point_3d)
+                                    node_counter += 1
+                            
+                            # Ensure counter-clockwise ordering for triangles
+                            tri_node_indices, tri_coords_3d = ensure_counter_clockwise(tri_node_indices, tri_coords_3d)
+                            
+                            element_id = mesh_counter + element_id_offset
+                            mesh_name = f"T{element_id}"
+                            mesh_elements[mesh_name] = {
+                                'type': 'triangle',
+                                'nodes': tri_node_indices,
+                                'coordinates': tri_coords_3d,
+                                'id': element_id
+                            }
+                            mesh_counter += 1
+                    else:
+                        element_id = mesh_counter + element_id_offset
+                        mesh_name = f"R{element_id}" if len(node_indices) == 4 else f"T{element_id}"
+                        elem_type = 'rectangle' if len(node_indices) == 4 else 'triangle'
+                        mesh_elements[mesh_name] = {
+                            'type': elem_type,
+                            'nodes': node_indices,
+                            'coordinates': coords_3d,
+                            'id': element_id
+                        }
+                        mesh_counter += 1
+    
+    # Second pass: triangulate remaining areas
+    covered_area = ShapelyPolygon()
+    for mesh in mesh_elements.values():
+        projected = project_to_plane(mesh['coordinates'])
+        covered_area = covered_area.union(ShapelyPolygon(projected))
+    
+    remaining_area = main_poly.difference(covered_area)
+    
+    if not remaining_area.is_empty and isinstance(remaining_area, (ShapelyPolygon, MultiPolygon)):
+        if isinstance(remaining_area, MultiPolygon):
+            remaining_polys = list(remaining_area.geoms)
+        else:
+            remaining_polys = [remaining_area]
+        
+        for poly in remaining_polys:
+            if not isinstance(poly, ShapelyPolygon):
+                continue
+                
+            ext_coords = list(poly.exterior.coords)
+            coords = ext_coords[:-1]
+            
+            # Check if this is a simple polygon we can handle
+            if len(coords) <= 4:
+                # Handle as either triangle or rectangle
+                node_indices = []
+                coords_3d = []
+                for coord in coords:
+                    x_proj, y_proj = coord
+                    point_3d = p0 + x_proj * u + y_proj * v
+                    
+                    found = False
+                    for internal_id, (existing_node_id, existing_point) in node_positions.items():
+                        if np.linalg.norm(point_3d - existing_point) < 1e-6:
+                            node_indices.append(existing_node_id)
+                            coords_3d.append(existing_point)
+                            found = True
+                            break
+                    
+                    if not found:
+                        node_id = node_counter + node_id_offset
+                        node_positions[node_counter] = (node_id, point_3d)
+                        node_indices.append(node_id)
+                        coords_3d.append(point_3d)
+                        node_counter += 1
+                
+                # Ensure counter-clockwise ordering
+                node_indices, coords_3d = ensure_counter_clockwise(node_indices, coords_3d)
+                
+                element_id = mesh_counter + element_id_offset
+                mesh_name = f"R{element_id}" if len(node_indices) == 4 else f"T{element_id}"
+                elem_type = 'rectangle' if len(node_indices) == 4 else 'triangle'
+                mesh_elements[mesh_name] = {
+                    'type': elem_type,
+                    'nodes': node_indices,
+                    'coordinates': coords_3d,
+                    'id': element_id
+                }
+                mesh_counter += 1
+            else:
+                # Complex polygon - triangulate it
+                triangles = triangulate(poly)
+                for triangle in triangles:
+                    tri_coords = list(triangle.exterior.coords)
+                    tri_node_indices = []
+                    tri_coords_3d = []
+                    
+                    for coord in tri_coords[:-1]:
+                        x_proj, y_proj = coord
+                        point_3d = p0 + x_proj * u + y_proj * v
+                        
+                        # Find or create nodes for this triangle
+                        found = False
+                        for internal_id, (existing_node_id, existing_point) in node_positions.items():
+                            if np.linalg.norm(point_3d - existing_point) < 1e-6:
+                                tri_node_indices.append(existing_node_id)
+                                tri_coords_3d.append(existing_point)
+                                found = True
+                                break
+                        
+                        if not found:
+                            node_id = node_counter + node_id_offset
+                            node_positions[node_counter] = (node_id, point_3d)
+                            tri_node_indices.append(node_id)
+                            tri_coords_3d.append(point_3d)
+                            node_counter += 1
+                    
+                    # Ensure counter-clockwise ordering for triangles
+                    tri_node_indices, tri_coords_3d = ensure_counter_clockwise(tri_node_indices, tri_coords_3d)
+                    
+                    element_id = mesh_counter + element_id_offset
+                    mesh_name = f"T{element_id}"
+                    mesh_elements[mesh_name] = {
+                        'type': 'triangle',
+                        'nodes': tri_node_indices,
+                        'coordinates': tri_coords_3d,
+                        'id': element_id
+                    }
+                    mesh_counter += 1
+    
+    # [Rest of the function remains the same...]
+    # (The rest of the function including plotting and JSON output is unchanged)
+
+    fig = plt.figure(figsize=(12, 8))
+    ax = fig.add_subplot(111, projection='3d')
+    ax.set_title('3D Mesh Elements with Nodes (excluding predefined points)')
+    
+    # Plot original shape
+    original_verts = [points + [points[0]]]
+    original_poly = Poly3DCollection(original_verts, alpha=0.3, 
+                                   facecolors='red', linewidths=2, 
+                                   edgecolors='red', linestyles='--')
+    ax.add_collection3d(original_poly)
+    
+    # Plot mesh elements
+    for name, data in mesh_elements.items():
+        if data['type'] == 'rectangle':
+            color = 'cyan'
+            alpha = 0.4
+        else:
+            color = 'lightgreen'
+            alpha = 0.6
+        
+        verts = [data['coordinates'] + [data['coordinates'][0]]]
+        poly = Poly3DCollection(verts, alpha=alpha, facecolors=color, 
+                              edgecolors='blue', linewidths=1)
+        ax.add_collection3d(poly)
+        
+        centroid = np.mean(data['coordinates'], axis=0)
+        ax.text(centroid[0], centroid[1], centroid[2], name, 
+                ha='center', va='center', fontsize=8, weight='bold')
+        
+        # Only plot nodes that weren't replaced by predefined points
+        for node_num in data['nodes']:
+            if node_num not in replaced_nodes:
+                coord = node_names[node_num]
+                ax.scatter([coord[0]], [coord[1]], [coord[2]], c='red', s=50)
+                ax.text(coord[0], coord[1], coord[2], f'N{node_num}', 
+                        ha='right', va='bottom', fontsize=8, color='darkred')
+    
+    # Plot predefined points
+    for p_name, p_coord in predefined_points.items():
+        ax.scatter([p_coord[0]], [p_coord[1]], [p_coord[2]], c='blue', s=100, marker='*')
+        ax.text(p_coord[0], p_coord[1], p_coord[2], p_name, 
+                ha='left', va='top', fontsize=10, color='darkblue', weight='bold')
+    
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Z')
+    
+    rect_patch = mpatches.Patch(color='cyan', label='Rectangular Elements')
+    tri_patch = mpatches.Patch(color='lightgreen', label='Triangular Elements')
+    node_patch = mpatches.Patch(color='red', label='Nodes (non-predefined)')
+    predef_patch = mpatches.Patch(color='blue', label='Predefined Points')
+    ax.legend(handles=[rect_patch, tri_patch, node_patch, predef_patch])
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Create the output structure with elements and nodes including IDs
+    output_data = {
+        "elements": {},
+        "nodes": {},
+    }
+
+    # Add all nodes with their coordinates and IDs
+    for node_id, coord in node_names.items():
+        output_data["nodes"][f"N{node_id}"] = {
+            "id": node_id,
+            "coordinates": [float(coord[0]), float(coord[1]), float(coord[2])],
+            "is_predefined": node_id in replaced_nodes
+        }
+
+    # Create a mapping of replaced node IDs to predefined point names
+    replaced_nodes_mapping = {node_id: p_name for p_name, node_id in closest_mesh_points.items()}
+
+    # Add all elements in the requested format with IDs
+    for elem_name, elem_data in mesh_elements.items():
+        # Replace node names with predefined point names where applicable
+        node_names_in_elem = []
+        for node_id in elem_data['nodes']:
+            if node_id in replaced_nodes_mapping:
+                node_names_in_elem.append(replaced_nodes_mapping[node_id])
+            else:
+                node_names_in_elem.append(f"N{node_id}")
+        
+        output_data["elements"][elem_name] = {
+            "id": elem_data['id'],
+            "type": elem_data['type'],
+            "nodes": node_names_in_elem,
+            # "nodes_coordinate": [[float(coord[0]), float(coord[1]), float(coord[2])] 
+            #                     for coord in elem_data['coordinates']]
+        }
+
+    # Save to JSON file
+    with open('mesh_data_with_predefined_points.json', 'w') as f:
+        json.dump(output_data, f, indent=4)
+
+    return output_data
+
+def create_proper_mesh_for_closed_area_3d1(points, predefined_points, num_x_div=4, num_y_div=4, numbering=1):
     # Calculate ID offsets based on numbering parameter
     node_id_offset = 10000 + (numbering - 1) * 1000
     element_id_offset = 10000 + (numbering - 1) * 1000
