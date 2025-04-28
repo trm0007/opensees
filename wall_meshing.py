@@ -380,10 +380,10 @@ def create_proper_mesh_for_closed_area_3d(points, predefined_points, num_x_div=4
                     elem['coordinates'][i] = predefined_point
 
     # 2. Add new shells (using corrected spelling)
-    updated_mesh = add_new_shells(add_shell, predefined_points, initial_mesh)
+    updated_mesh = add_new_shells
 
     # 3. Remove shells (if they exist) (using corrected spelling)
-    final_mesh = remove_shells(remove_shell, updated_mesh)
+    final_mesh = remove_shells
     
     # [Rest of the function remains the same...]
     # (Plotting and JSON output code from previous version)
