@@ -20,23 +20,6 @@ from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from shapely.geometry import Polygon as ShapelyPolygon, MultiPolygon
 import matplotlib.patches as mpatches
 
-predefined_points = {
-        # 'P1': np.array([0, 0, 0]),
-        # 'P2': np.array([2, 0, 1.5]),
-        # 'P3': np.array([2.5, 0, 1.50]),
-        # 'P4': np.array([1.5, 2.5, 0]),
-        # 'P5': np.array([0.5, 2, 0]),
-        # 'P6': np.array([-0.5, 1, 0]),
-        # 'P7': np.array([3, 0, 0]),
-        # 'P8': np.array([3, 0, 2]),
-        # 'P9': np.array([0, 0, 2]),
-        # 'P10': np.array([2, 2, 2]),
-        # 'P11': np.array([0, 2, 2]),
-        # 'P12': np.array([4, 0, 1]),
-        # 'P13': np.array([3, 3, 3]),
-        # 'P14': np.array([1, 3, 2]),
-        # 'P15': np.array([0, 2, 1.5])
-    }
 
 
 from shapely.ops import triangulate
@@ -556,6 +539,23 @@ add_shell = {
 
 remove_shell = ["Shell4", "Shell5"]  # Shells to be removed (also corrected spelling)
 
+predefined_points = {
+        # 'P1': np.array([0, 0, 0]),
+        # 'P2': np.array([2, 0, 1.5]),
+        # 'P3': np.array([2.5, 0, 1.50]),
+        # 'P4': np.array([1.5, 2.5, 0]),
+        # 'P5': np.array([0.5, 2, 0]),
+        # 'P6': np.array([-0.5, 1, 0]),
+        # 'P7': np.array([3, 0, 0]),
+        # 'P8': np.array([3, 0, 2]),
+        # 'P9': np.array([0, 0, 2]),
+        # 'P10': np.array([2, 2, 2]),
+        # 'P11': np.array([0, 2, 2]),
+        # 'P12': np.array([4, 0, 1]),
+        # 'P13': np.array([3, 3, 3]),
+        # 'P14': np.array([1, 3, 2]),
+        # 'P15': np.array([0, 2, 1.5])
+    }
 
 # Example usage:
 horizontal_points = [
