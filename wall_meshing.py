@@ -957,6 +957,17 @@ def create_proper_mesh_for_closed_area_3d1(points, predefined_points, num_x_div=
     return output_data
 
 def create_shell_mesh():
+    # Define material properties (from your example)
+    E = 2.1e11       # Elastic modulus (Pa)
+    nu = 0.3         # Poisson's ratio
+    rho = 2500       # Density (kg/m^3)
+    t = 0.5          # Shell thickness (m)
+    
+    
+    # Define material and section (from your example)
+    ops.nDMaterial("ElasticIsotropic", 1, E, nu, rho)
+    ops.section("PlateFiber", 1, 1, t)
+    
     # Load the single structure data file
     structure_file = 'lamb/structure_data_json.json'
     if not os.path.exists(structure_file):
@@ -998,7 +1009,7 @@ def create_shell_mesh():
             print(f"ops.node({node_id}, {x:.3f}, {y:.3f}, {z:.3f})")
         
         print("\n# Creating Shell Elements")
-        # Create all shell elements
+        # Create all shell elements with proper section
         for elem_name, elem_info in mesh_data['elements'].items():
             elem_id = elem_info['id']
             node_tags = []
@@ -1017,15 +1028,15 @@ def create_shell_mesh():
                             node_tags.append(n_data['id'])
                             found = True
                             break
-                    # Check if it matches a structure node
-                    for s_node in structure_nodes.values():
-                        if (abs(s_node['x'] - target_coords[0]) < 1e-6 and
-                            abs(s_node['y'] - target_coords[1]) < 1e-6 and
-                            abs(s_node['z'] - target_coords[2]) < 1e-6):
-                            node_tags.append(s_node['id'])
-                            found = True
-                            break
-
+                    if not found:
+                        # Check if it matches a structure node
+                        for s_node in structure_nodes.values():
+                            if (abs(s_node['x'] - target_coords[0]) < 1e-6 and \
+                               abs(s_node['y'] - target_coords[1]) < 1e-6 and \
+                               abs(s_node['z'] - target_coords[2]) < 1e-6):
+                                node_tags.append(s_node['id'])
+                                found = True
+                                break
                     if not found:
                         print(f"# Warning: Could not find node for reference {node_ref} in element {elem_name}")
                 elif node_ref.startswith('n'):  # Predefined structure node
@@ -1034,17 +1045,17 @@ def create_shell_mesh():
             
             # Create the appropriate shell element if we have all nodes
             if len(node_tags) == len(elem_info['nodes']):
-                secTag = 1  # Replace with your actual section tag
                 if len(node_tags) == 4:
-                    ops.element('ShellMITC4', elem_id, *node_tags, secTag)
-                    print(f"ops.element('ShellMITC4', {elem_id}, {', '.join(map(str, node_tags))}, {secTag})")
+                    ops.element("ShellMITC4", elem_id, *node_tags, 1)  # Using section tag 1
+                    print(f"ops.element('ShellMITC4', {elem_id}, {', '.join(map(str, node_tags))}, 1)")
                 elif len(node_tags) == 3:
-                    ops.element('ShellDKGT', elem_id, *node_tags, secTag)
-                    print(f"ops.element('ShellDKGT', {elem_id}, {', '.join(map(str, node_tags))}, {secTag})")
+                    ops.element("ShellDKGT", elem_id, *node_tags, 1)  # Using section tag 1
+                    print(f"ops.element('ShellDKGT', {elem_id}, {', '.join(map(str, node_tags))}, 1)")
                 else:
                     print(f"# Warning: Element {elem_name} has {len(node_tags)} nodes - skipped")
             else:
                 print(f"# Warning: Element {elem_name} is missing nodes - skipped")
+
 
 
 # Create dictionaries for adding and removing shells (with corrected spelling)
