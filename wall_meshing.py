@@ -25,6 +25,101 @@ import matplotlib.patches as mpatches
 from shapely.ops import triangulate
 
 
+def add_new_shells(mesh_elements, node_names, add_shell):
+    """
+    Add new shells to the mesh based on predefined points
+    
+    Parameters:
+    -----------
+    mesh_elements: dict
+        Dictionary containing the current mesh elements
+    node_names: dict
+        Dictionary mapping node IDs to their coordinates
+    add_shell: dict
+        Dictionary with shell names as keys and lists of point names as values
+        
+    Returns:
+    --------
+    dict: Updated mesh elements with new shells added
+    """
+    # Create a copy of the input mesh_elements to avoid modifying the original
+    updated_mesh = mesh_elements.copy()
+    mesh_counter = max([elem_data['id'] for elem_data in mesh_elements.values()]) + 1
+    
+    # Process each shell to be added
+    for shell_name, points in add_shell.items():
+        if len(points) == 3:  # Triangle
+            element_id = mesh_counter
+            mesh_name = f"T{element_id}"
+            shell_type = 'triangle'
+        elif len(points) == 4:  # Quadrilateral
+            element_id = mesh_counter
+            mesh_name = f"R{element_id}"
+            shell_type = 'rectangle'
+        else:
+            print(f"Warning: Shell {shell_name} has {len(points)} points, only triangles (3) and quads (4) are supported")
+            continue
+        
+        # Extract node IDs and coordinates
+        nodes = []
+        coords = []
+        
+        # Find node IDs corresponding to predefined points
+        for point_name in points:
+            found = False
+            for node_id, node_info in node_names.items():
+                if node_id == point_name:
+                    found = True
+                    nodes.append(node_id)
+                    coords.append(node_info)
+                    break
+            
+            if not found:
+                print(f"Warning: Point {point_name} not found in mesh nodes")
+                # You could implement logic to create new nodes here if needed
+        
+        # Only create shell if we have all required points
+        if len(nodes) == len(points):
+            updated_mesh[shell_name] = {
+                'type': shell_type,
+                'nodes': nodes,
+                'coordinates': coords,
+                'id': element_id
+            }
+            mesh_counter += 1
+            print(f"Added shell {shell_name} with ID {element_id}")
+    
+    return updated_mesh
+
+
+def remove_shells(mesh_elements, remove_shell):
+    """
+    Remove specified shells from the mesh
+    
+    Parameters:
+    -----------
+    mesh_elements: dict
+        Dictionary containing the current mesh elements
+    remove_shell: list
+        List of shell names to be removed
+        
+    Returns:
+    --------
+    dict: Updated mesh elements with specified shells removed
+    """
+    # Create a copy of the input mesh_elements to avoid modifying the original
+    final_mesh = mesh_elements.copy()
+    
+    for shell_name in remove_shell:
+        if shell_name in final_mesh:
+            del final_mesh[shell_name]
+            print(f"Removed shell {shell_name}")
+        else:
+            print(f"Warning: Shell {shell_name} not found in mesh")
+    
+    return final_mesh
+
+
 
 
 def create_proper_mesh_for_closed_area_3d(points, predefined_points, num_x_div=4, num_y_div=4, numbering=1):
@@ -379,11 +474,14 @@ def create_proper_mesh_for_closed_area_3d(points, predefined_points, num_x_div=4
                 if n == node_id:
                     elem['coordinates'][i] = predefined_point
 
-    # 2. Add new shells (using corrected spelling)
-    updated_mesh = add_new_shells
-
-    # 3. Remove shells (if they exist) (using corrected spelling)
-    final_mesh = remove_shells
+    # 2. Add new shells
+    updated_mesh = add_new_shells(mesh_elements, node_names, add_shell)
+    
+    # 3. Remove shells (if they exist)
+    final_mesh = remove_shells(updated_mesh, remove_shell)
+    
+    # Update mesh_elements to use the final mesh
+    mesh_elements = final_mesh
     
     # [Rest of the function remains the same...]
     # (Plotting and JSON output code from previous version)
