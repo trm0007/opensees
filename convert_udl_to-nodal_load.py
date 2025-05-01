@@ -165,6 +165,21 @@ if __name__ == "__main__":
     print("\nAfter changing load factor to 2.0:")
     surface_load.printEquivalentNodalLoads()
 
+
+'''
+Important Notes:
+For a simple pressure load, the moments will be zero since pressure only creates forces normal to the surface.
+
+If you need to apply moments or more complex loading, you would need to:
+
+Modify the getResistingForce() method to include moment contributions
+
+Potentially calculate moment arms based on node positions
+
+The stiffness matrix remains zero in this implementation since it's just a load element. If you need stiffness contributions, you would need to implement that separately.
+
+The example shows zero moments because pressure loading typically only creates forces. To see non-zero moments, you would need a more complex loading scenario.
+'''
 import math
 import numpy as np
 
@@ -362,3 +377,17 @@ if __name__ == "__main__":
     print("\nWith accelerations and mass (rhoH = 2.0):")
     forces_with_inertia = tri_surface_load.getResistingForceIncInertia()
     tri_surface_load.printEquivalentNodalLoads()
+
+'''
+Important Notes:
+For triangular elements, we use a single integration point which is sufficient for constant pressure loading.
+
+The mass matrix only affects translational DOFs (no rotational inertia in this implementation).
+
+The example demonstrates both pressure loads and inertia forces from nodal accelerations.
+
+Rotational DOFs are included in the output but will be zero for simple pressure loading.
+
+This implementation maintains all the key functionality of the original C++ code while expanding it to handle 6 DOF per node and providing clear Pythonic interfaces.
+
+'''
