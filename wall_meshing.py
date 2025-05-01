@@ -1,15 +1,5 @@
-
-import json
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-from matplotlib.patches import Polygon
-from matplotlib.collections import PatchCollection
-from mpl_toolkits.mplot3d.art3d import Poly3DCollection, Path3DCollection
-from shapely.geometry import Polygon as ShapelyPolygon, MultiPolygon
-from shapely.ops import triangulate
-
-
+from import_ import *
+from units import *
 
 def add_new_shells(mesh_elements, node_names, add_shell):
     """
@@ -149,6 +139,7 @@ def create_proper_mesh_for_closed_area_3d(points, predefined_points, num_x_div=4
             v1 = np.array(coords[1]) - np.array(coords[0])
             v2 = np.array(coords[2]) - np.array(coords[0])
             cross = np.cross(v1, v2)
+            normal = cross  # For triangles, use the cross product as the normal
         else:
             # For polygons with more than 3 points
             # Use Newell's method to compute normal
@@ -427,6 +418,46 @@ def create_proper_mesh_for_closed_area_3d(points, predefined_points, num_x_div=4
         ax.text(centroid[0], centroid[1], centroid[2], name, 
                 ha='center', va='center', fontsize=8, weight='bold')
         
+        
+        # Initialize replaced_nodes as an empty set at the beginning of the plotting section
+        # Create a mapping of all node IDs to their coordinates
+        node_names = {node_id: coord for internal_id, (node_id, coord) in node_positions.items()}
+
+        # Initialize replaced_nodes as an empty set
+        replaced_nodes = set()
+
+        # Find closest mesh points to predefined points
+        predefined_points_list = list(predefined_points.values())
+        closest_mesh_points = {}
+
+        for i, predefined_point in enumerate(predefined_points_list):
+            min_dist = float('inf')
+            closest_node = None
+            for node_id, mesh_point in node_names.items():
+                dist = np.linalg.norm(predefined_point - mesh_point)
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_node = node_id
+            if closest_node is not None:
+                closest_mesh_points[f'P{i+1}'] = closest_node
+
+        # Replace closest mesh points with predefined points
+        for p_name, node_id in closest_mesh_points.items():
+            predefined_point = predefined_points[p_name]
+            # Mark this node as replaced
+            replaced_nodes.add(node_id)
+            # Update node_names
+            node_names[node_id] = predefined_point
+            # Update coordinates in mesh elements
+            for elem in mesh_elements.values():
+                for i, n in enumerate(elem['nodes']):
+                    if n == node_id:
+                        elem['coordinates'][i] = predefined_point
+
+
+
+
+
         # Only plot nodes that weren't replaced by predefined points
         for node_num in data['nodes']:
             if node_num not in replaced_nodes:
@@ -495,7 +526,10 @@ def create_proper_mesh_for_closed_area_3d(points, predefined_points, num_x_div=4
 
     return output_data
 
-def create_proper_mesh_for_closed_area_3d1(points, predefined_points, num_x_div=4, num_y_div=4, numbering=1):
+def create_proper_mesh_for_closed_area_3d1(points, predefined_points, JSON_FOLDER, IMAGE_FOLDER, 
+                                         num_x_div=4, num_y_div=4, numbering=1,
+                                         add_shell=None, remove_shell=None):
+    # [Existing code...]
     # Calculate ID offsets based on numbering parameter
     node_id_offset = 10000 + (numbering - 1) * 1000
     element_id_offset = 10000 + (numbering - 1) * 1000
@@ -913,6 +947,16 @@ def create_proper_mesh_for_closed_area_3d1(points, predefined_points, num_x_div=
     ax.legend(handles=[rect_patch, tri_patch, node_patch, predef_patch])
     
     plt.tight_layout()
+    # Ensure the IMAGE_FOLDER exists
+    os.makedirs(IMAGE_FOLDER, exist_ok=True)
+
+    # Define the image file path (e.g., "mesh_plot.png")
+    image_filename = f"mesh_plot_{numbering}.png"  # Include numbering if needed
+    image_path = os.path.join(IMAGE_FOLDER, image_filename)
+
+    # Save the figure
+    plt.savefig(image_path, dpi=300, bbox_inches='tight')
+    print(f"✅ Saved plot to: {image_path}")
     plt.show()
     
     # Create the output structure with elements and nodes including IDs
@@ -949,196 +993,343 @@ def create_proper_mesh_for_closed_area_3d1(points, predefined_points, num_x_div=
             # "nodes_coordinate": [[float(coord[0]), float(coord[1]), float(coord[2])] 
             #                     for coord in elem_data['coordinates']]
         }
+    wall_dir = os.path.join(JSON_FOLDER, 'wall')
+    os.makedirs(wall_dir, exist_ok=True)
+
+    full_path = os.path.join(wall_dir, f'mesh_data_with_predefined_points{numbering}.json')
 
     # Save to JSON file
-    with open(f'lamb/mesh_data_with_predefined_points{numbering}.json', 'w') as f:
+    with open(full_path, 'w') as f:
         json.dump(output_data, f, indent=4)
 
     return output_data
 
-def create_shell_mesh():
-    # Define material properties (from your example)
+
+
+def create_shell_mesh(JSON_FOLDER="output_folder", IMAGE_FOLDER=None):
+    """
+    Create shell elements from mesh data with consistent file paths
+    Aligned with create_proper_mesh_for_closed_area_3d1() file structure
+    
+    Args:
+        JSON_FOLDER (str): Path to folder containing structure data and wall subfolder
+        IMAGE_FOLDER (str, optional): Path for saving images (not used in current implementation)
+    """
+    
+    # =============================================
+    # 1. File Path Configuration and Validation
+    # =============================================
+    # Structure data path
+    structure_file = os.path.join(JSON_FOLDER, "structure_data_json.json")
+    
+    # Mesh files path (in wall subdirectory)
+    wall_dir = os.path.join(JSON_FOLDER, "wall")
+
+    
+    # Validate paths exist
+    if not os.path.exists(structure_file):
+        raise FileNotFoundError(f"Structure file not found at: {structure_file}")
+    if not os.path.exists(wall_dir):
+        raise FileNotFoundError(f"Wall directory not found at: {wall_dir}")
+
+    # =============================================
+    # 2. Material Definition
+    # =============================================
+    
+    # Define material properties
     E = 2.1e11       # Elastic modulus (Pa)
     nu = 0.3         # Poisson's ratio
     rho = 2500       # Density (kg/m^3)
     t = 0.5          # Shell thickness (m)
     
-    
-    # Define material and section (from your example)
+    # Define material and section
     ops.nDMaterial("ElasticIsotropic", 1, E, nu, rho)
-    ops.section("PlateFiber", 1, 1, t)
-    
-    # Load the single structure data file
-    structure_file = 'lamb/structure_data_json.json'
-    if not os.path.exists(structure_file):
-        print(f"Error: Structure file {structure_file} not found")
-        return
+    section_tag = 100
+    ops.section("PlateFiber", section_tag, 1, t)
+
+    # =============================================
+    # 3. Load Structure Data
+    # =============================================
     
     with open(structure_file, 'r') as f:
         structure_data = json.load(f)
+        # Create mapping of structure nodes: {"nID": {node_data}}
         structure_nodes = {f"n{node['id']}": node for node in structure_data['nodes']}
+
+    # =============================================
+    # 4. Find and Process Mesh Files
+    # =============================================
     
-    # Find all mesh files matching the pattern
+    # Find all mesh files in wall directory
     mesh_files = []
-    for filename in os.listdir('lamb'):
+    for filename in os.listdir(wall_dir):
         match = re.match(r'mesh_data_with_predefined_points(\d+)\.json', filename)
         if match:
             numbering = int(match.group(1))
-            mesh_files.append((numbering, os.path.join('lamb', filename)))
+            mesh_files.append((numbering, os.path.join(wall_dir, filename)))
     
     if not mesh_files:
-        print("No mesh data files found in lamb/ directory")
-        return
-    
-    # Process each mesh file with the structure data
-    for numbering, mesh_file in mesh_files:
-        print(f"\n# Processing mesh file {mesh_file} with numbering {numbering}")
+        raise FileNotFoundError(f"No valid mesh files found in {wall_dir}")
+
+    # Process each mesh file
+    for numbering, mesh_file in sorted(mesh_files, key=lambda x: x[0]):
+        print(f"\nProcessing mesh {numbering} from {mesh_file}")
         
-        # Load mesh data
         with open(mesh_file, 'r') as f:
             mesh_data = json.load(f)
         
-        print("\n# Creating Nodes")
-        # Create all nodes from the mesh data
+        # =============================================
+        # 5. Create Nodes
+        # =============================================
+        print("\nCreating Nodes:")
         mesh_node_ids = set()
         for node_name, node_info in mesh_data['nodes'].items():
             node_id = node_info['id']
             x, y, z = node_info['coordinates']
             ops.node(node_id, x, y, z)
             mesh_node_ids.add(node_id)
-            print(f"ops.node({node_id}, {x:.3f}, {y:.3f}, {z:.3f})")
-        
-        print("\n# Creating Shell Elements")
-        # Create all shell elements with proper section
+            print(f"  Created node {node_id} at ({x:.3f}, {y:.3f}, {z:.3f})")
+
+        # =============================================
+        # 6. Create Shell Elements
+        # =============================================
+        print("\nCreating Shell Elements:")
         for elem_name, elem_info in mesh_data['elements'].items():
             elem_id = elem_info['id']
             node_tags = []
             
-            # Get node IDs for this element
+            # Resolve node references
             for node_ref in elem_info['nodes']:
                 if node_ref.startswith('N'):  # Regular mesh node
                     node_id = int(node_ref[1:])
-                    node_tags.append(node_id)
+                    if node_id in mesh_node_ids:
+                        node_tags.append(node_id)
+                    else:
+                        print(f"  Warning: Mesh node {node_ref} not found")
                 elif node_ref.startswith('P'):  # Predefined point
-                    # Find in mesh nodes by coordinate matching
-                    target_coords = elem_info['coordinates'][elem_info['nodes'].index(node_ref)]
-                    found = False
-                    for n_id, n_data in mesh_data['nodes'].items():
-                        if n_data['coordinates'] == target_coords:
-                            node_tags.append(n_data['id'])
-                            found = True
-                            break
-                    if not found:
-                        # Check if it matches a structure node
-                        for s_node in structure_nodes.values():
-                            if (abs(s_node['x'] - target_coords[0]) < 1e-6 and \
-                               abs(s_node['y'] - target_coords[1]) < 1e-6 and \
-                               abs(s_node['z'] - target_coords[2]) < 1e-6):
-                                node_tags.append(s_node['id'])
+                    # Find by coordinate matching
+                    target_coords = next(
+                        (coord for n, coord in zip(elem_info['nodes'], 
+                                                elem_info.get('nodes_coordinate', [])) 
+                        if n == node_ref), None)
+                    
+                    if target_coords:
+                        # Search in mesh nodes
+                        found = False
+                        for n_id, n_data in mesh_data['nodes'].items():
+                            if np.allclose(n_data['coordinates'], target_coords, atol=1e-6):
+                                node_tags.append(n_data['id'])
                                 found = True
                                 break
-                    if not found:
-                        print(f"# Warning: Could not find node for reference {node_ref} in element {elem_name}")
-                elif node_ref.startswith('n'):  # Predefined structure node
+                        
+                        # Search in structure nodes if not found
+                        if not found:
+                            for s_id, s_node in structure_nodes.items():
+                                if np.allclose([s_node['x'], s_node['y'], s_node['z']], 
+                                              target_coords, atol=1e-6):
+                                    node_tags.append(int(s_id[1:]))
+                                    found = True
+                                    break
+                        
+                        if not found:
+                            print(f"  Warning: Could not find node for {node_ref} at {target_coords}")
+                elif node_ref.startswith('n'):  # Structure node
                     node_id = int(node_ref[1:])
-                    node_tags.append(node_id)
-            
-            # Create the appropriate shell element if we have all nodes
+                    if node_ref in structure_nodes:
+                        node_tags.append(node_id)
+                    else:
+                        print(f"  Warning: Structure node {node_ref} not found")
+
+            # Create element if all nodes were resolved
             if len(node_tags) == len(elem_info['nodes']):
                 if len(node_tags) == 4:
-                    ops.element("ShellMITC4", elem_id, *node_tags, 1)  # Using section tag 1
-                    print(f"ops.element('ShellMITC4', {elem_id}, {', '.join(map(str, node_tags))}, 1)")
+                    ops.element("ShellMITC4", elem_id, *node_tags, section_tag)
+                    print(f"  Created ShellMITC4 element {elem_id} with nodes {node_tags}")
                 elif len(node_tags) == 3:
-                    ops.element("ShellDKGT", elem_id, *node_tags, 1)  # Using section tag 1
-                    print(f"ops.element('ShellDKGT', {elem_id}, {', '.join(map(str, node_tags))}, 1)")
+                    ops.element("ShellDKGT", elem_id, *node_tags, section_tag)
+                    print(f"  Created ShellDKGT element {elem_id} with nodes {node_tags}")
                 else:
-                    print(f"# Warning: Element {elem_name} has {len(node_tags)} nodes - skipped")
+                    print(f"  Warning: Element {elem_name} has unsupported number of nodes ({len(node_tags)})")
             else:
-                print(f"# Warning: Element {elem_name} is missing nodes - skipped")
+                print(f"  Warning: Element {elem_name} is missing nodes (expected {len(elem_info['nodes'])}, found {len(node_tags)})")
 
+    print("\nShell mesh creation completed successfully")
+    return True
 
 
 # Create dictionaries for adding and removing shells (with corrected spelling)
-add_shell = {
-    "Shell1": ["P1", "P2", "P3", "P4"],  # Quadrilateral shell
-    "Shell2": ["P5", "P6", "P7"],       # Triangular shell
-    "Shell3": ["P8", "P9", "P10", "P11"] # Another quadrilateral
-}
+# add_shell = {
+#     "Shell1": ["P1", "P2", "P3", "P4"],  # Quadrilateral shell
+#     "Shell2": ["P5", "P6", "P7"],       # Triangular shell
+#     "Shell3": ["P8", "P9", "P10", "P11"] # Another quadrilateral
+# }
 
-remove_shell = ["Shell4", "Shell5"]  # Shells to be removed (also corrected spelling)
+# remove_shell = ["Shell4", "Shell5"]  # Shells to be removed (also corrected spelling)
 
-predefined_points = {
-        # 'P1': np.array([0, 0, 0]),
-        # 'P2': np.array([2, 0, 1.5]),
-        # 'P3': np.array([2.5, 0, 1.50]),
-        # 'P4': np.array([1.5, 2.5, 0]),
-        # 'P5': np.array([0.5, 2, 0]),
-        # 'P6': np.array([-0.5, 1, 0]),
-        # 'P7': np.array([3, 0, 0]),
-        # 'P8': np.array([3, 0, 2]),
-        # 'P9': np.array([0, 0, 2]),
-        # 'P10': np.array([2, 2, 2]),
-        # 'P11': np.array([0, 2, 2]),
-        # 'P12': np.array([4, 0, 1]),
-        # 'P13': np.array([3, 3, 3]),
-        # 'P14': np.array([1, 3, 2]),
-        # 'P15': np.array([0, 2, 1.5])
-    }
+# predefined_points = {
+#         # 'P1': np.array([0, 0, 0]),
+#         # 'P2': np.array([2, 0, 1.5]),
+
+#     }
 
 # Example usage:
-horizontal_points = [
-    [0, 0, 0],
-    [2, 0, 0],
-    [2.5, 1.5, 0],
-    [1.5, 2.5, 0],
-    [0.5, 2, 0],
-    [-0.5, 1, 0]
-]
+# horizontal_points = [
+#     [0, 0, 0],
+#     [2, 0, 0],
+#     [2.5, 1.5, 0],
+#     [1.5, 2.5, 0],
+#     [0.5, 2, 0],
+#     [-0.5, 1, 0]
+# ]
 
 
-vertical_points = [
-    [0, 0, 0],    # Bottom-front
-    [3, 0, 0],    # Bottom-back
-    [3, 0, 2],    # Top-back
-    [0, 0, 2]     # Top-front
-]
-
-
-
-inclined_points = [
-    [0, 0, 0],    # Base point 1
-    [3, 0, 0],    # Base point 2
-    [2, 2, 2],    # Top point 1
-    [0, 2, 2]     # Top point 2
-]
+# vertical_points = [
+#     [0, 0, 0],    # Bottom-front
+#     [3, 0, 0],    # Bottom-back
+#     [3, 0, 2],    # Top-back
+#     [0, 0, 2]     # Top-front
+# ]
 
 
 
-
-complex_inclined_points = [
-    [0, 0, 0],     # Base point
-    [4, 0, 1],     # Right point (slightly elevated)
-    [3, 3, 3],     # Top point
-    [1, 3, 2],     # Left point
-    [0, 2, 1.5]    # Front point
-]
+# inclined_points = [
+#     [0, 0, 0],    # Base point 1
+#     [3, 0, 0],    # Base point 2
+#     [2, 2, 2],    # Top point 1
+#     [0, 2, 2]     # Top point 2
+# ]
 
 
 
 
-# Horizontal element (works as before)
-mesh_elements = create_proper_mesh_for_closed_area_3d(horizontal_points , predefined_points)
-
-# # Vertical element (now works correctly)
-# mesh_elements = create_proper_mesh_for_closed_area_3d(vertical_points)
-mesh_elements = create_proper_mesh_for_closed_area_3d(vertical_points, predefined_points)
-
-# # Inclined element (now works correctly)
-mesh_elements = create_proper_mesh_for_closed_area_3d(inclined_points, predefined_points)
-# print(mesh_elements)
-# # Complex inclined element
-mesh_elements = create_proper_mesh_for_closed_area_3d(complex_inclined_points, predefined_points)
+# complex_inclined_points = [
+#     [0, 0, 0],     # Base point
+#     [4, 0, 1],     # Right point (slightly elevated)
+#     [3, 3, 3],     # Top point
+#     [1, 3, 2],     # Left point
+#     [0, 2, 1.5]    # Front point
+# ]
 
 
 
-create_shell_mesh()
+
+# # Horizontal element (works as before)
+# mesh_elements = create_proper_mesh_for_closed_area_3d1(horizontal_points , predefined_points)
+
+# # # Vertical element (now works correctly)
+# # mesh_elements = create_proper_mesh_for_closed_area_3d(vertical_points)
+# mesh_elements = create_proper_mesh_for_closed_area_3d1(vertical_points, predefined_points)
+
+# # # Inclined element (now works correctly)
+# mesh_elements = create_proper_mesh_for_closed_area_3d1(inclined_points, predefined_points)
+# # print(mesh_elements)
+# # # Complex inclined element
+# mesh_elements = create_proper_mesh_for_closed_area_3d1(complex_inclined_points, predefined_points)
+
+
+
+# create_shell_mesh()
+
+
+# import os
+# import numpy as np
+# from shapely.geometry import Polygon as ShapelyPolygon
+# from shapely.ops import triangulate
+# from shapely.geometry import MultiPolygon
+# import matplotlib.pyplot as plt
+# from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+# import matplotlib.patches as mpatches
+# import json
+# import re
+# import openseespy.opensees as ops
+
+# # Set up directories
+# OUTPUT_FOLDER = "output_folder"  # Main output directory
+# os.makedirs(OUTPUT_FOLDER, exist_ok=True)  # Create if doesn't exist
+
+# # Subdirectories
+# JSON_FOLDER = os.path.join(OUTPUT_FOLDER, "json_files")
+# IMAGE_FOLDER = os.path.join(OUTPUT_FOLDER, "images")
+# os.makedirs(JSON_FOLDER, exist_ok=True)
+# os.makedirs(IMAGE_FOLDER, exist_ok=True)
+
+# # Define all input variables
+# add_shell = {
+#     # "Shell1": ["P1", "P2", "P3", "P4"],  # Quadrilateral shell
+#     # "Shell2": ["P5", "P6", "P7"],       # Triangular shell
+#     # "Shell3": ["P8", "P9", "P10", "P11"] # Another quadrilateral
+# }
+
+# # remove_shell = ["Shell4", "Shell5"]  # Shells to be removed
+# remove_shell = []  # Shells to be removed
+
+# predefined_points = {
+#     # 'P1': np.array([0, 0, 0]),
+#     # 'P2': np.array([2, 0, 1.5]),
+#     # 'P3': np.array([2, 2, 1.5]),
+#     # 'P4': np.array([0, 2, 0]),
+#     # 'P5': np.array([1, 1, 1]),
+#     # 'P6': np.array([1.5, 0.5, 1.2]),
+#     # 'P7': np.array([0.5, 1.5, 0.8]),
+#     # 'P8': np.array([0.5, 0, 0.5]),
+#     # 'P9': np.array([1.5, 0, 1]),
+#     # 'P10': np.array([1.5, 2, 1]),
+#     # 'P11': np.array([0.5, 2, 0.5])
+# }
+
+# # Define all surface configurations
+# surface_configurations = {
+#     "horizontal": [
+#         [0, 0, 0],
+#         [2, 0, 0],
+#         [2.5, 1.5, 0],
+#         [1.5, 2.5, 0],
+#         [0.5, 2, 0],
+#         [-0.5, 1, 0]
+#     ],
+#     "vertical": [
+#         [0, 0, 0],    # Bottom-front
+#         [3, 0, 0],    # Bottom-back
+#         [3, 0, 2],    # Top-back
+#         [0, 0, 2]     # Top-front
+#     ],
+#     "inclined": [
+#         [0, 0, 0],    # Base point 1
+#         [3, 0, 0],    # Base point 2
+#         [2, 2, 2],    # Top point 1
+#         [0, 2, 2]     # Top point 2
+#     ],
+#     "complex_inclined": [
+#         [0, 0, 0],     # Base point
+#         [4, 0, 1],     # Right point (slightly elevated)
+#         [3, 3, 3],     # Top point
+#         [1, 3, 2],     # Left point
+#         [0, 2, 1.5]    # Front point
+#     ]
+# }
+
+
+# # Process each configuration
+# for config_name, points in surface_configurations.items():
+#     print(f"\nProcessing {config_name} configuration...")
+    
+#     # Call mesh creation function with shell parameters
+#     mesh_data = create_proper_mesh_for_closed_area_3d1(
+#         points=points,
+#         predefined_points=predefined_points,
+#         JSON_FOLDER=JSON_FOLDER,
+#         IMAGE_FOLDER=IMAGE_FOLDER,
+#         num_x_div=4,
+#         num_y_div=4,
+#         numbering=list(surface_configurations.keys()).index(config_name) + 1,
+#         add_shell=add_shell,
+#         remove_shell=remove_shell
+#     )
+    
+#     # Call shell creation function
+#     create_shell_mesh(
+#         JSON_FOLDER=JSON_FOLDER,
+#         IMAGE_FOLDER=IMAGE_FOLDER
+#     )
+
+# print("\nAll configurations processed successfully!")
