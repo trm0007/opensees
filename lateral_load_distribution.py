@@ -2,22 +2,22 @@ import json
 
 # Given data as a list of dictionaries
 elements = [
-    {"name": "A", "Dx": 500, "Dy": 1750, "x": 0, "y": 22.895},
-    {"name": "B", "Dx": 500, "Dy": 500, "x": 6, "y": 23.52},
-    {"name": "C", "Dx": 500, "Dy": 500, "x": 15, "y": 23.52},
-    {"name": "D", "Dx": 500, "Dy": 500, "x": 21, "y": 23.52},
-    {"name": "E", "Dx": 300, "Dy": 700, "x": 0, "y": 15.35},
-    {"name": "F", "Dx": 700, "Dy": 300, "x": 6, "y": 15.35},
-    {"name": "G", "Dx": 700, "Dy": 300, "x": 15, "y": 15.35},
-    {"name": "H", "Dx": 300, "Dy": 700, "x": 21, "y": 15.35},
-    {"name": "I", "Dx": 500, "Dy": 500, "x": 0, "y": 7.18},
-    {"name": "J", "Dx": 500, "Dy": 500, "x": 6, "y": 7.18},
-    {"name": "K", "Dx": 500, "Dy": 500, "x": 15, "y": 7.18},
-    {"name": "L", "Dx": 500, "Dy": 500, "x": 21, "y": 7.18},
-    {"name": "M", "Dx": 500, "Dy": 500, "x": 0, "y": 0},
-    {"name": "N", "Dx": 500, "Dy": 500, "x": 6, "y": 0},
-    {"name": "O", "Dx": 500, "Dy": 500, "x": 15, "y": 0},
-    {"name": "P", "Dx": 1750, "Dy": 500, "x": 20.375, "y": 0}
+    {"name": "A", "Dx": 500, "Dy": 1750, "x": 0, "y": 22.895, "weight":10},
+    {"name": "B", "Dx": 500, "Dy": 500, "x": 6, "y": 23.52, "weight":10},
+    {"name": "C", "Dx": 500, "Dy": 500, "x": 15, "y": 23.52, "weight":10},
+    {"name": "D", "Dx": 500, "Dy": 500, "x": 21, "y": 23.52, "weight":10},
+    {"name": "E", "Dx": 300, "Dy": 700, "x": 0, "y": 15.35, "weight":10},
+    {"name": "F", "Dx": 700, "Dy": 300, "x": 6, "y": 15.35, "weight":10},
+    {"name": "G", "Dx": 700, "Dy": 300, "x": 15, "y": 15.35, "weight":10},
+    {"name": "H", "Dx": 300, "Dy": 700, "x": 21, "y": 15.35, "weight":10},
+    {"name": "I", "Dx": 500, "Dy": 500, "x": 0, "y": 7.18, "weight":10},
+    {"name": "J", "Dx": 500, "Dy": 500, "x": 6, "y": 7.18, "weight":10},
+    {"name": "K", "Dx": 500, "Dy": 500, "x": 15, "y": 7.18, "weight":10},
+    {"name": "L", "Dx": 500, "Dy": 500, "x": 21, "y": 7.18, "weight":10},
+    {"name": "M", "Dx": 500, "Dy": 500, "x": 0, "y": 0, "weight":10},
+    {"name": "N", "Dx": 500, "Dy": 500, "x": 6, "y": 0, "weight":10},
+    {"name": "O", "Dx": 500, "Dy": 500, "x": 15, "y": 0, "weight":10},
+    {"name": "P", "Dx": 1750, "Dy": 500, "x": 20.375, "y": 0, "weight":10}
 ]
 
 # Calculate kx and ky for each element
@@ -39,8 +39,8 @@ for element in elements:
     element["A"] = Dx * Dy
     
     # Calculate weighted positions
-    element["x_A"] = x * element["A"]
-    element["y_A"] = y * element["A"]
+    element["x_A"] = x * element["A"] * element["weight"]
+    element["y_A"] = y * element["A"] * element["weight"]
 
 # Sum all kx, ky, kx_y, and ky_x
 sum_kx = sum(element["kx"] for element in elements)
