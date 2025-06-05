@@ -119,3 +119,42 @@ print(f"  Centroid: ({cx2_analytical:.6f}, {cy2_analytical:.6f})")
 
 
 # Function to create mesh elements (each with 4 nodes) in a rectangular grid using x, y, z (y=0)
+
+
+
+from shapely.geometry import Polygon
+
+
+def calculate_moments_of_inertia(polygon):
+    # Get centroid
+    centroid = polygon.centroid
+    cx, cy = centroid.x, centroid.y
+    
+    # Translate coordinates to centroidal system
+    exterior_coords = list(polygon.exterior.coords[:-1])  # Remove duplicate
+    translated_coords = [(x - cx, y - cy) for x, y in exterior_coords]
+    
+    n = len(translated_coords)
+    Ix = Iy = 0.0
+    
+    for i in range(n):
+        x_i, y_i = translated_coords[i]
+        x_j, y_j = translated_coords[(i + 1) % n]
+        
+        cross_term = x_i * y_j - x_j * y_i
+        Ix += (y_i**2 + y_i * y_j + y_j**2) * cross_term
+        Iy += (x_i**2 + x_i * x_j + x_j**2) * cross_term
+    
+    return abs(Ix / 12.0), abs(Iy / 12.0)
+
+
+polygon = Polygon([(0, 0), (4, 0), (4, 3), (0, 3)])
+Ix, Iy = calculate_moments_of_inertia(polygon)
+print(f"Numerical (Polygon) Ix: {Ix}, Iy: {Iy}")
+
+# Expected analytical solution
+width = 4  # x-direction
+height = 3  # y-direction
+Ix_expected = width * height**3 / 12  # 9.0
+Iy_expected = height * width**3 / 12  # 16.0
+print(f"Analytical (Rectangle) Ix: {Ix_expected}, Iy: {Iy_expected}")
