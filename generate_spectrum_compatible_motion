@@ -1,0 +1,269 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import signal
+from scipy.optimize import minimize
+import numpy.fft as fft
+
+def generate_spectrum_compatible_motion(Z, I, R, Sa_g, duration, dt, site_class, target_periods):
+    """
+    Generate spectrum-compatible ground motion for Bangladesh based on BNBC 2020
+    
+    Parameters:
+    -----------
+    Z : float
+        Zone factor (0.12 for Zone 1, 0.20 for Zone 2, 0.28 for Zone 3, 0.36 for Zone 4)
+    I : float
+        Importance factor (1.0 for ordinary, 1.2 for important, 1.5 for essential)
+    R : float
+        Response reduction factor (depends on structural system)
+    Sa_g : float
+        Spectral acceleration coefficient at zero period
+    duration : float
+        Duration of ground motion (seconds)
+    dt : float
+        Time step (seconds)
+    site_class : str
+        Site class ('A', 'B', 'C', 'D', 'E') according to BNBC
+    target_periods : array
+        Target periods for spectrum matching
+    
+    Returns:
+    --------
+    acceleration : numpy array
+        Spectrum-compatible acceleration time history
+    time : numpy array
+        Time array
+    """
+    
+    # Input validation
+    if site_class not in ['A', 'B', 'C', 'D', 'E']:
+        raise ValueError("site_class must be one of: 'A', 'B', 'C', 'D', 'E'")
+    
+    if target_periods is None:
+        raise ValueError("target_periods cannot be None")
+    
+    if len(target_periods) < 5:
+        raise ValueError("target_periods must have at least 5 values")
+    
+    if duration <= 0:
+        raise ValueError("duration must be positive")
+    
+    if dt <= 0:
+        raise ValueError("dt must be positive")
+    
+    if Z <= 0:
+        raise ValueError("Zone factor Z must be positive")
+    
+    if I <= 0:
+        raise ValueError("Importance factor I must be positive")
+    
+    if R <= 0:
+        raise ValueError("Response reduction factor R must be positive")
+    
+    if Sa_g <= 0:
+        raise ValueError("Spectral acceleration coefficient Sa_g must be positive")
+
+    # BNBC 2020 Design Spectrum Calculation
+    def bnbc_design_spectrum(T, Z, I, R, Sa_g, site_class):
+        """
+        Calculate BNBC 2020 design spectrum ordinates
+        """
+        # Site coefficients (Table 6.2.20 BNBC 2020)
+        site_coefficients = {
+            'A': {'Fa': 0.8, 'Fv': 0.8},
+            'B': {'Fa': 1.0, 'Fv': 1.0},
+            'C': {'Fa': 1.2, 'Fv': 1.15},
+            'D': {'Fa': 1.6, 'Fv': 1.35},
+            'E': {'Fa': 2.5, 'Fv': 1.8}
+        }
+        
+        Fa = site_coefficients[site_class]['Fa']
+        Fv = site_coefficients[site_class]['Fv']
+        
+        # Short period spectral acceleration
+        SMS = Fa * Sa_g
+        SM1 = Fv * Sa_g
+        
+        # Design spectral acceleration parameters
+        SDS = (2/3) * SMS
+        SD1 = (2/3) * SM1
+        
+        # Design response spectrum
+        Sa = np.zeros_like(T)
+        
+        for i, T_val in enumerate(T):
+            if T_val == 0:
+                Sa[i] = 0.4 * SDS
+            elif T_val < 0.2 * SD1 / SDS:
+                Sa[i] = SDS * (0.4 + 3.0 * T_val / (0.2 * SD1 / SDS))
+            elif T_val < SD1 / SDS:
+                Sa[i] = SDS
+            elif T_val <= 4.0:
+                Sa[i] = SD1 / T_val
+            else:
+                Sa[i] = SD1 * 4.0 / T_val**2
+        
+        # Apply importance factor and response reduction factor
+        Sa_design = (Sa * I) / R
+        
+        return Sa_design
+
+    # Calculate target spectrum
+    target_spectrum = bnbc_design_spectrum(target_periods, Z, I, R, Sa_g, site_class)
+
+    # Generate initial white noise
+    n_points = int(duration / dt)
+    time = np.linspace(0, duration, n_points)
+    
+    # Generate initial accelerogram with envelope function
+    white_noise = np.random.normal(0, 1, n_points)
+    
+    # Apply envelope function (build-up, strong motion, decay)
+    t = np.linspace(0, 1, n_points)
+    envelope = np.ones(n_points)
+    
+    # Build-up phase (first 20%)
+    build_up_duration = int(0.2 * n_points)
+    envelope[:build_up_duration] = np.linspace(0, 1, build_up_duration)
+    
+    # Decay phase (last 30%)
+    decay_start = int(0.7 * n_points)
+    envelope[decay_start:] = np.linspace(1, 0, n_points - decay_start)
+    
+    # Apply envelope to white noise
+    initial_accel = white_noise * envelope
+
+    # Spectrum compatibility iteration
+    def spectrum_error(accel):
+        """Calculate error between current and target spectrum"""
+        current_spectrum = calculate_response_spectrum(accel, dt, target_periods)
+        error = np.mean((current_spectrum - target_spectrum)**2)
+        return error
+
+    def calculate_response_spectrum(accel, dt, periods):
+        """Calculate response spectrum for given acceleration"""
+        spectrum = np.zeros_like(periods)
+        
+        for i, T in enumerate(periods):
+            if T == 0:
+                spectrum[i] = np.max(np.abs(accel))
+                continue
+                
+            # SDOF system parameters
+            omega = 2 * np.pi / T
+            damping_ratio = 0.05
+            
+            # State-space representation
+            A = np.array([[0, 1], 
+                         [-omega**2, -2 * damping_ratio * omega]])
+            B = np.array([[0], [-1]])
+            C = np.array([[1, 0]])
+            D = np.array([[0]])
+            
+            # Time integration (Newmark-beta)
+            u = np.zeros(len(accel))
+            v = np.zeros(len(accel))
+            a = np.zeros(len(accel))
+            
+            for j in range(1, len(accel)):
+                # Constant acceleration method
+                u[j] = u[j-1] + dt * v[j-1] + (dt**2 / 2) * a[j-1]
+                v[j] = v[j-1] + dt * a[j-1]
+                a[j] = -2 * damping_ratio * omega * v[j] - omega**2 * u[j] - accel[j]
+            
+            spectrum[i] = np.max(np.abs(a + accel))
+        
+        return spectrum
+
+    # Optimize for spectrum compatibility
+    print("Starting spectrum compatibility optimization...")
+    
+    best_accel = initial_accel.copy()
+    best_error = spectrum_error(initial_accel)
+    
+    # Simple iterative frequency domain adjustment
+    max_iterations = 50
+    tolerance = 1e-4
+    
+    for iteration in range(max_iterations):
+        # Calculate current response spectrum
+        current_spectrum = calculate_response_spectrum(best_accel, dt, target_periods)
+        
+        # Calculate scaling factors
+        scale_factors = target_spectrum / (current_spectrum + 1e-10)
+        
+        # Interpolate scaling factors to all frequencies
+        frequencies = 1.0 / target_periods[1:]  # Skip T=0
+        scale_factors_interp = np.interp(np.fft.fftfreq(len(best_accel), dt)[:len(best_accel)//2],
+                                        frequencies, scale_factors[1:])
+        
+        # Apply scaling in frequency domain
+        accel_fft = np.fft.fft(best_accel)
+        scaled_fft = accel_fft.copy()
+        
+        # Scale positive frequencies
+        n_half = len(best_accel) // 2
+        for i in range(1, n_half):
+            scaled_fft[i] *= scale_factors_interp[i-1]
+            scaled_fft[-i] *= scale_factors_interp[i-1]  # Negative frequencies
+        
+        # Inverse FFT
+        new_accel = np.real(np.fft.ifft(scaled_fft))
+        
+        # Apply envelope again to maintain duration characteristics
+        new_accel = new_accel * envelope
+        
+        # Normalize to maintain PGA
+        current_pga = np.max(np.abs(new_accel))
+        if current_pga > 0:
+            new_accel = new_accel * (np.max(np.abs(best_accel)) / current_pga)
+        
+        # Calculate error
+        new_error = spectrum_error(new_accel)
+        
+        if new_error < best_error:
+            best_accel = new_accel
+            best_error = new_error
+        
+        print(f"Iteration {iteration+1}: Error = {best_error:.6f}")
+        
+        if best_error < tolerance:
+            print("Convergence achieved!")
+            break
+    
+    # Final scaling to match target PGA
+    target_pga = target_spectrum[0]  # PGA is at T=0
+    current_pga = np.max(np.abs(best_accel))
+    if current_pga > 0:
+        best_accel = best_accel * (target_pga / current_pga)
+    
+    print(f"Final PGA: {np.max(np.abs(best_accel)):.3f}g")
+    
+    return best_accel, time
+
+# Usage example for Bangladesh:
+if __name__ == "__main__":
+    # Bangladesh parameters (Dhaka - Zone 4)
+    Z = 0.36      # Zone factor for Zone 4
+    I = 1.2       # Important building
+    R = 5.0       # Response reduction factor
+    Sa_g = 1.0    # Spectral acceleration coefficient
+    duration = 30.0  # seconds
+    dt = 0.01     # time step
+    site_class = 'D'  # Dhaka typical site class
+    
+    # Target periods for spectrum matching
+    target_periods = np.array([0.00, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 
+                             0.50, 0.75, 1.00, 1.50, 2.00, 3.00, 4.00])
+    
+    # Generate spectrum-compatible motion
+    acceleration, time = generate_spectrum_compatible_motion(
+        Z, I, R, Sa_g, duration, dt, site_class, target_periods
+    )
+    
+    # Save to file for OpenSees analysis
+    np.savetxt('bnbc_dhaka_zone4_classD.txt', acceleration)
+    
+    print("Spectrum-compatible ground motion generated successfully!")
+    print(f"File saved: bnbc_dhaka_zone4_classD.txt")
+    print(f"PGA: {np.max(np.abs(acceleration)):.3f}g")
