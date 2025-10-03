@@ -1,269 +1,939 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy import signal
+from scipy.interpolate import interp1d
 from scipy.optimize import minimize
-import numpy.fft as fft
+import os
+import glob
+import pandas as pd
 
-def generate_spectrum_compatible_motion(Z, I, R, Sa_g, duration, dt, site_class, target_periods):
+class ProductionGroundMotionScaler:
     """
-    Generate spectrum-compatible ground motion for Bangladesh based on BNBC 2020
-    
-    Parameters:
-    -----------
-    Z : float
-        Zone factor (0.12 for Zone 1, 0.20 for Zone 2, 0.28 for Zone 3, 0.36 for Zone 4)
-    I : float
-        Importance factor (1.0 for ordinary, 1.2 for important, 1.5 for essential)
-    R : float
-        Response reduction factor (depends on structural system)
-    Sa_g : float
-        Spectral acceleration coefficient at zero period
-    duration : float
-        Duration of ground motion (seconds)
-    dt : float
-        Time step (seconds)
-    site_class : str
-        Site class ('A', 'B', 'C', 'D', 'E') according to BNBC
-    target_periods : array
-        Target periods for spectrum matching
-    
-    Returns:
-    --------
-    acceleration : numpy array
-        Spectrum-compatible acceleration time history
-    time : numpy array
-        Time array
+    Production-ready BNBC ground motion scaling tool using local data files.
     """
     
-    # Input validation
-    if site_class not in ['A', 'B', 'C', 'D', 'E']:
-        raise ValueError("site_class must be one of: 'A', 'B', 'C', 'D', 'E'")
-    
-    if target_periods is None:
-        raise ValueError("target_periods cannot be None")
-    
-    if len(target_periods) < 5:
-        raise ValueError("target_periods must have at least 5 values")
-    
-    if duration <= 0:
-        raise ValueError("duration must be positive")
-    
-    if dt <= 0:
-        raise ValueError("dt must be positive")
-    
-    if Z <= 0:
-        raise ValueError("Zone factor Z must be positive")
-    
-    if I <= 0:
-        raise ValueError("Importance factor I must be positive")
-    
-    if R <= 0:
-        raise ValueError("Response reduction factor R must be positive")
-    
-    if Sa_g <= 0:
-        raise ValueError("Spectral acceleration coefficient Sa_g must be positive")
-
-    # BNBC 2020 Design Spectrum Calculation
-    def bnbc_design_spectrum(T, Z, I, R, Sa_g, site_class):
+    def __init__(self, damping_ratio=0.05):
+        self.damping_ratio = damping_ratio
+        self.records = []
+        self.target_spectrum = None
+        
+    def load_from_local_directory(self, directory_path, file_pattern="*.txt", 
+                                  time_column=0, accel_column=1, dt=None, 
+                                  header_lines=0, delimiter=None):
         """
-        Calculate BNBC 2020 design spectrum ordinates
+        Load ground motion records from local directory.
         """
-        # Site coefficients (Table 6.2.20 BNBC 2020)
-        site_coefficients = {
-            'A': {'Fa': 0.8, 'Fv': 0.8},
-            'B': {'Fa': 1.0, 'Fv': 1.0},
-            'C': {'Fa': 1.2, 'Fv': 1.15},
-            'D': {'Fa': 1.6, 'Fv': 1.35},
-            'E': {'Fa': 2.5, 'Fv': 1.8}
-        }
+        print(f"\n[PRODUCTION] Loading ground motions from: {directory_path}")
         
-        Fa = site_coefficients[site_class]['Fa']
-        Fv = site_coefficients[site_class]['Fv']
+        # Find all matching files
+        search_pattern = os.path.join(directory_path, file_pattern)
+        file_list = glob.glob(search_pattern)
         
-        # Short period spectral acceleration
-        SMS = Fa * Sa_g
-        SM1 = Fv * Sa_g
+        if not file_list:
+            raise FileNotFoundError(f"No files found matching pattern: {search_pattern}")
         
-        # Design spectral acceleration parameters
-        SDS = (2/3) * SMS
-        SD1 = (2/3) * SM1
+        print(f"Found {len(file_list)} ground motion files")
         
-        # Design response spectrum
-        Sa = np.zeros_like(T)
+        loaded_count = 0
+        for file_path in file_list:
+            try:
+                record_name = os.path.splitext(os.path.basename(file_path))[0]
+                
+                # Load data based on file extension
+                if file_path.lower().endswith(('.csv')):
+                    data = self._load_csv_file(file_path, header_lines, delimiter)
+                elif file_path.lower().endswith(('.txt', '.dat', '.acc', '.at2')):
+                    data = self._load_text_file(file_path, header_lines, delimiter)
+                else:
+                    print(f"⚠️  Skipping unsupported file format: {file_path}")
+                    continue
+                
+                if data is None or len(data) < 2:
+                    print(f"⚠️  Skipping file with insufficient data: {file_path}")
+                    continue
+                
+                # Extract time and acceleration
+                time = data[:, time_column]
+                acceleration = data[:, accel_column]
+                
+                # Calculate dt if not provided
+                if dt is None:
+                    if len(time) > 1:
+                        dt_calculated = time[1] - time[0]
+                        # Validate consistent time step
+                        time_diffs = np.diff(time)
+                        if np.max(np.abs(time_diffs - dt_calculated)) > 1e-6:
+                            print(f"⚠️  Irregular time steps in {file_path}, using average")
+                            dt_calculated = np.mean(time_diffs)
+                    else:
+                        print(f"⚠️  Cannot determine dt for {file_path}, using default 0.01s")
+                        dt_calculated = 0.01
+                else:
+                    dt_calculated = dt
+                
+                # Remove mean (baseline correction)
+                acceleration = acceleration - np.mean(acceleration)
+                
+                # Convert to g if in m/s² (assuming typical PGA range)
+                pga_ms2 = np.max(np.abs(acceleration))
+                if pga_ms2 > 2.0:  # Likely in m/s² if PGA > 2g
+                    acceleration = acceleration / 9.81
+                    print(f"   Converted {record_name} from m/s² to g")
+                
+                record = {
+                    'name': record_name,
+                    'acceleration': acceleration,
+                    'dt': dt_calculated,
+                    'time': time,
+                    'file_path': file_path,
+                    'pga_original': np.max(np.abs(acceleration)),
+                    'duration': time[-1] if len(time) > 0 else len(acceleration) * dt_calculated
+                }
+                
+                self.records.append(record)
+                loaded_count += 1
+                print(f"   ✓ {record_name}: {len(acceleration)} points, dt={dt_calculated:.4f}s, "
+                      f"PGA={record['pga_original']:.3f}g, duration={record['duration']:.1f}s")
+                
+            except Exception as e:
+                print(f"❌ Error loading {file_path}: {str(e)}")
+                continue
         
-        for i, T_val in enumerate(T):
-            if T_val == 0:
-                Sa[i] = 0.4 * SDS
-            elif T_val < 0.2 * SD1 / SDS:
-                Sa[i] = SDS * (0.4 + 3.0 * T_val / (0.2 * SD1 / SDS))
-            elif T_val < SD1 / SDS:
-                Sa[i] = SDS
-            elif T_val <= 4.0:
-                Sa[i] = SD1 / T_val
+        print(f"\n✓ Successfully loaded {loaded_count}/{len(file_list)} ground motion records")
+        return loaded_count
+    
+    def _load_csv_file(self, file_path, header_lines=0, delimiter=None):
+        """Load data from CSV file."""
+        try:
+            if delimiter is None:
+                # Try to auto-detect delimiter
+                with open(file_path, 'r') as f:
+                    first_line = f.readline()
+                    if ',' in first_line:
+                        delimiter = ','
+                    elif ';' in first_line:
+                        delimiter = ';'
+                    elif '\t' in first_line:
+                        delimiter = '\t'
+                    else:
+                        delimiter = None
+            
+            data = pd.read_csv(file_path, skiprows=header_lines, delimiter=delimiter, 
+                             header=None, engine='python')
+            return data.values
+        except Exception as e:
+            print(f"Error reading CSV {file_path}: {e}")
+            return None
+    
+    def _load_text_file(self, file_path, header_lines=0, delimiter=None):
+        """Load data from text file."""
+        try:
+            if delimiter is None:
+                delimiter = None  # Let numpy auto-detect
+            
+            data = np.loadtxt(file_path, skiprows=header_lines, delimiter=delimiter)
+            return data
+        except Exception as e:
+            print(f"Error reading text file {file_path}: {e}")
+            return None
+    
+    def load_peer_format(self, directory_path):
+        """
+        Load records in PEER NGA-West2 format.
+        """
+        print(f"\n[PRODUCTION] Loading PEER format records from: {directory_path}")
+        
+        # Look for PEER format files (.AT2 is common)
+        file_list = glob.glob(os.path.join(directory_path, "*.AT2")) + \
+                   glob.glob(os.path.join(directory_path, "*.at2"))
+        
+        if not file_list:
+            print("No PEER format files found, trying other formats...")
+            return self.load_from_local_directory(directory_path)
+        
+        loaded_count = 0
+        for file_path in file_list:
+            try:
+                acceleration, dt, record_name = self._parse_peer_file(file_path)
+                
+                if acceleration is not None:
+                    time = np.arange(len(acceleration)) * dt
+                    
+                    record = {
+                        'name': record_name,
+                        'acceleration': acceleration,
+                        'dt': dt,
+                        'time': time,
+                        'file_path': file_path,
+                        'pga_original': np.max(np.abs(acceleration)),
+                        'duration': len(acceleration) * dt
+                    }
+                    
+                    self.records.append(record)
+                    loaded_count += 1
+                    print(f"   ✓ {record_name}: {len(acceleration)} points, dt={dt:.4f}s, "
+                          f"PGA={record['pga_original']:.3f}g")
+                        
+            except Exception as e:
+                print(f"❌ Error loading PEER file {file_path}: {str(e)}")
+                continue
+        
+        print(f"\n✓ Successfully loaded {loaded_count} PEER format records")
+        return loaded_count
+    
+    def _parse_peer_file(self, file_path):
+        """Parse PEER NGA-West2 format file."""
+        try:
+            with open(file_path, 'r') as f:
+                lines = f.readlines()
+            
+            # PEER header typically has metadata in first few lines
+            header_found = False
+            data_lines = []
+            dt = None
+            record_name = os.path.splitext(os.path.basename(file_path))[0]
+            
+            for i, line in enumerate(lines):
+                if line.strip().startswith('NPTS=') or line.strip().startswith('DT='):
+                    # Parse header line
+                    header_parts = line.split(',')
+                    for part in header_parts:
+                        if 'DT=' in part:
+                            dt = float(part.split('=')[1].strip())
+                        elif 'NPTS=' in part:
+                            npts = int(part.split('=')[1].strip())
+                    header_found = True
+                elif header_found and line.strip():
+                    # Data lines after header
+                    data_lines.append(line.strip())
+            
+            if not data_lines:
+                # If no header found, try to parse as simple column data
+                data = np.loadtxt(file_path)
+                if len(data.shape) == 1:
+                    acceleration = data
+                else:
+                    acceleration = data[:, 1] if data.shape[1] > 1 else data[:, 0]
+                
+                # Estimate dt from typical values
+                dt = 0.005  # Default for strong motion records
+                
             else:
-                Sa[i] = SD1 * 4.0 / T_val**2
+                # Parse the data lines
+                all_data = []
+                for line in data_lines:
+                    numbers = line.split()
+                    all_data.extend([float(x) for x in numbers])
+                
+                acceleration = np.array(all_data)
+            
+            # Convert from cm/s² to g if needed
+            pga_cms2 = np.max(np.abs(acceleration))
+            if pga_cms2 > 1000:  # Likely in cm/s²
+                acceleration = acceleration / 981.0  # Convert to g
+            elif pga_cms2 > 10:   # Likely in m/s²
+                acceleration = acceleration / 9.81   # Convert to g
+            
+            return acceleration, dt, record_name
+            
+        except Exception as e:
+            print(f"Error parsing PEER file {file_path}: {e}")
+            return None, None, None
+
+    def load_single_record(self, file_path, **kwargs):
+        """
+        Load a single ground motion record.
+        """
+        directory = os.path.dirname(file_path)
+        filename = os.path.basename(file_path)
         
-        # Apply importance factor and response reduction factor
-        Sa_design = (Sa * I) / R
+        # Create temporary pattern to match only this file
+        file_extension = os.path.splitext(filename)[1]
+        pattern = f"*{file_extension}"
         
-        return Sa_design
+        # Load from directory but only this specific file
+        original_files = glob.glob(os.path.join(directory, pattern))
+        target_file = os.path.join(directory, filename)
+        
+        if target_file not in original_files:
+            raise FileNotFoundError(f"File not found: {file_path}")
+        
+        return self.load_from_local_directory(directory, pattern, **kwargs)
 
-    # Calculate target spectrum
-    target_spectrum = bnbc_design_spectrum(target_periods, Z, I, R, Sa_g, site_class)
+    def validate_records(self):
+        """
+        Validate loaded records for quality and consistency.
+        """
+        print(f"\n[PRODUCTION] Validating {len(self.records)} records...")
+        
+        valid_records = []
+        issues = []
+        
+        for i, record in enumerate(self.records):
+            record_issues = []
+            
+            # Check data quality
+            if len(record['acceleration']) < 100:
+                record_issues.append("Insufficient data points")
+            
+            if record['dt'] <= 0:
+                record_issues.append("Invalid time step")
+            
+            if np.max(np.abs(record['acceleration'])) < 0.01:
+                record_issues.append("Very low PGA - possible units issue")
+            
+            if np.max(np.abs(record['acceleration'])) > 3.0:
+                record_issues.append("Very high PGA - check units")
+            
+            # Check for NaN or Inf values
+            if np.any(np.isnan(record['acceleration'])) or np.any(np.isinf(record['acceleration'])):
+                record_issues.append("Contains NaN or Inf values")
+            
+            if not record_issues:
+                valid_records.append(record)
+                print(f"   ✓ {record['name']}: Valid")
+            else:
+                issues.append(f"{record['name']}: {', '.join(record_issues)}")
+                print(f"   ⚠️  {record['name']}: {', '.join(record_issues)}")
+        
+        self.records = valid_records
+        print(f"\n✓ Validation complete: {len(valid_records)} valid records")
+        
+        if issues:
+            print(f"❌ Removed {len(issues)} records with issues")
+            for issue in issues:
+                print(f"   - {issue}")
+        
+        return valid_records, issues
 
-    # Generate initial white noise
-    n_points = int(duration / dt)
-    time = np.linspace(0, duration, n_points)
-    
-    # Generate initial accelerogram with envelope function
-    white_noise = np.random.normal(0, 1, n_points)
-    
-    # Apply envelope function (build-up, strong motion, decay)
-    t = np.linspace(0, 1, n_points)
-    envelope = np.ones(n_points)
-    
-    # Build-up phase (first 20%)
-    build_up_duration = int(0.2 * n_points)
-    envelope[:build_up_duration] = np.linspace(0, 1, build_up_duration)
-    
-    # Decay phase (last 30%)
-    decay_start = int(0.7 * n_points)
-    envelope[decay_start:] = np.linspace(1, 0, n_points - decay_start)
-    
-    # Apply envelope to white noise
-    initial_accel = white_noise * envelope
-
-    # Spectrum compatibility iteration
-    def spectrum_error(accel):
-        """Calculate error between current and target spectrum"""
-        current_spectrum = calculate_response_spectrum(accel, dt, target_periods)
-        error = np.mean((current_spectrum - target_spectrum)**2)
-        return error
-
-    def calculate_response_spectrum(accel, dt, periods):
-        """Calculate response spectrum for given acceleration"""
-        spectrum = np.zeros_like(periods)
+    def calculate_response_spectrum(self, acceleration, dt, periods):
+        """
+        Calculate response spectrum for given acceleration time history.
+        Uses Newmark-Beta method for numerical integration.
+        """
+        Sa = np.zeros(len(periods))
         
         for i, T in enumerate(periods):
             if T == 0:
-                spectrum[i] = np.max(np.abs(accel))
+                Sa[i] = np.max(np.abs(acceleration))
                 continue
                 
-            # SDOF system parameters
             omega = 2 * np.pi / T
-            damping_ratio = 0.05
+            zeta = self.damping_ratio
             
-            # State-space representation
-            A = np.array([[0, 1], 
-                         [-omega**2, -2 * damping_ratio * omega]])
-            B = np.array([[0], [-1]])
-            C = np.array([[1, 0]])
-            D = np.array([[0]])
+            # Newmark-Beta method parameters
+            beta = 0.25
+            gamma = 0.5
             
-            # Time integration (Newmark-beta)
-            u = np.zeros(len(accel))
-            v = np.zeros(len(accel))
-            a = np.zeros(len(accel))
+            # System properties
+            k = omega**2
+            c = 2 * zeta * omega
+            m = 1.0
             
-            for j in range(1, len(accel)):
-                # Constant acceleration method
-                u[j] = u[j-1] + dt * v[j-1] + (dt**2 / 2) * a[j-1]
-                v[j] = v[j-1] + dt * a[j-1]
-                a[j] = -2 * damping_ratio * omega * v[j] - omega**2 * u[j] - accel[j]
+            # Initial conditions
+            u = 0.0  # displacement
+            v = 0.0  # velocity
+            a = -acceleration[0]  # initial acceleration
             
-            spectrum[i] = np.max(np.abs(a + accel))
+            # Effective stiffness
+            k_eff = k + gamma * c / (beta * dt) + m / (beta * dt**2)
+            
+            max_u = 0.0
+            
+            for ag in acceleration:
+                # Effective load
+                p_eff = -m * ag + m * (1/(beta*dt**2) * u + 1/(beta*dt) * v + (1/(2*beta) - 1) * a)
+                p_eff += c * (gamma/(beta*dt) * u + (gamma/beta - 1) * v + dt * (gamma/(2*beta) - 1) * a)
+                
+                # Solve for displacement
+                u_new = p_eff / k_eff
+                
+                # Calculate velocity and acceleration
+                v_new = gamma/(beta*dt) * (u_new - u) + (1 - gamma/beta) * v + dt * (1 - gamma/(2*beta)) * a
+                a_new = 1/(beta*dt**2) * (u_new - u) - 1/(beta*dt) * v - (1/(2*beta) - 1) * a
+                
+                # Update values
+                u = u_new
+                v = v_new
+                a = a_new
+                
+                # Track maximum displacement
+                if abs(u) > abs(max_u):
+                    max_u = u
+            
+            # Spectral acceleration = omega^2 * max_displacement
+            Sa[i] = omega**2 * abs(max_u)
         
-        return spectrum
+        return Sa
 
-    # Optimize for spectrum compatibility
-    print("Starting spectrum compatibility optimization...")
-    
-    best_accel = initial_accel.copy()
-    best_error = spectrum_error(initial_accel)
-    
-    # Simple iterative frequency domain adjustment
-    max_iterations = 50
-    tolerance = 1e-4
-    
-    for iteration in range(max_iterations):
-        # Calculate current response spectrum
-        current_spectrum = calculate_response_spectrum(best_accel, dt, target_periods)
+    def define_bnbc_target_spectrum(self, S, Fa, Fv, periods=None):
+        """
+        Define BNBC design response spectrum.
+        """
+        if periods is None:
+            periods = np.logspace(-2, 1, 200)
         
-        # Calculate scaling factors
-        scale_factors = target_spectrum / (current_spectrum + 1e-10)
+        # BNBC spectrum parameters
+        SDS = Fa * S  # Short period design spectral acceleration
+        SD1 = Fv * S  # 1-second design spectral acceleration
         
-        # Interpolate scaling factors to all frequencies
-        frequencies = 1.0 / target_periods[1:]  # Skip T=0
-        scale_factors_interp = np.interp(np.fft.fftfreq(len(best_accel), dt)[:len(best_accel)//2],
-                                        frequencies, scale_factors[1:])
+        T0 = 0.2 * (SD1 / SDS)
+        TS = SD1 / SDS
+        TL = 6.0  # Long period transition (6s for Bangladesh)
         
-        # Apply scaling in frequency domain
-        accel_fft = np.fft.fft(best_accel)
-        scaled_fft = accel_fft.copy()
+        Sa = np.zeros(len(periods))
         
-        # Scale positive frequencies
-        n_half = len(best_accel) // 2
-        for i in range(1, n_half):
-            scaled_fft[i] *= scale_factors_interp[i-1]
-            scaled_fft[-i] *= scale_factors_interp[i-1]  # Negative frequencies
+        for i, T in enumerate(periods):
+            if T <= T0:
+                Sa[i] = 0.6 * SDS + (SDS - 0.6 * SDS) * (T / T0)
+            elif T <= TS:
+                Sa[i] = SDS
+            elif T <= TL:
+                Sa[i] = SD1 / T
+            else:
+                Sa[i] = SD1 * TL / T**2
         
-        # Inverse FFT
-        new_accel = np.real(np.fft.ifft(scaled_fft))
+        self.target_spectrum = {
+            'periods': periods,
+            'Sa': Sa,
+            'SDS': SDS,
+            'SD1': SD1,
+            'T0': T0,
+            'TS': TS,
+            'S': S,
+            'Fa': Fa,
+            'Fv': Fv
+        }
         
-        # Apply envelope again to maintain duration characteristics
-        new_accel = new_accel * envelope
+        print(f"\n✓ BNBC Target Spectrum Defined:")
+        print(f"  Seismic Coefficient (S): {S}")
+        print(f"  Site Coefficients: Fa={Fa}, Fv={Fv}")
+        print(f"  SDS = {SDS:.3f}g, SD1 = {SD1:.3f}g")
+        print(f"  T0 = {T0:.3f}s, TS = {TS:.3f}s")
         
-        # Normalize to maintain PGA
-        current_pga = np.max(np.abs(new_accel))
-        if current_pga > 0:
-            new_accel = new_accel * (np.max(np.abs(best_accel)) / current_pga)
-        
-        # Calculate error
-        new_error = spectrum_error(new_accel)
-        
-        if new_error < best_error:
-            best_accel = new_accel
-            best_error = new_error
-        
-        print(f"Iteration {iteration+1}: Error = {best_error:.6f}")
-        
-        if best_error < tolerance:
-            print("Convergence achieved!")
-            break
-    
-    # Final scaling to match target PGA
-    target_pga = target_spectrum[0]  # PGA is at T=0
-    current_pga = np.max(np.abs(best_accel))
-    if current_pga > 0:
-        best_accel = best_accel * (target_pga / current_pga)
-    
-    print(f"Final PGA: {np.max(np.abs(best_accel)):.3f}g")
-    
-    return best_accel, time
+        return periods, Sa
 
-# Usage example for Bangladesh:
+    def amplitude_scaling(self, record_idx, fundamental_period):
+        """
+        Simple amplitude scaling method (BNBC compliant).
+        Scale factor matches average spectrum to target over period range 0.2T to 1.5T.
+        """
+        if self.target_spectrum is None:
+            raise ValueError("Target spectrum not defined. Use define_bnbc_target_spectrum first.")
+        
+        record = self.records[record_idx]
+        
+        # Period range for matching (0.2T to 1.5T as per BNBC)
+        T_min = 0.2 * fundamental_period
+        T_max = 1.5 * fundamental_period
+        
+        # Periods for matching
+        match_periods = np.linspace(T_min, T_max, 30)
+        
+        # Calculate response spectrum of record
+        record_Sa = self.calculate_response_spectrum(
+            record['acceleration'], record['dt'], match_periods
+        )
+        
+        # Interpolate target spectrum
+        target_interp = interp1d(
+            self.target_spectrum['periods'], 
+            self.target_spectrum['Sa'], 
+            kind='linear', 
+            fill_value='extrapolate'
+        )
+        target_Sa = target_interp(match_periods)
+        
+        # Calculate scale factor (average ratio)
+        scale_factor = np.mean(target_Sa / record_Sa)
+        
+        return scale_factor
+
+    def spectral_matching_scaling(self, record_idx, fundamental_period, method='least_squares'):
+        """
+        Advanced spectral matching to minimize difference between scaled and target spectrum.
+        """
+        if self.target_spectrum is None:
+            raise ValueError("Target spectrum not defined.")
+        
+        record = self.records[record_idx]
+        
+        # Period range for matching
+        T_min = 0.2 * fundamental_period
+        T_max = 1.5 * fundamental_period
+        match_periods = np.linspace(T_min, T_max, 30)
+        
+        # Calculate response spectrum
+        record_Sa = self.calculate_response_spectrum(
+            record['acceleration'], record['dt'], match_periods
+        )
+        
+        # Target spectrum at matching periods
+        target_interp = interp1d(
+            self.target_spectrum['periods'], 
+            self.target_spectrum['Sa'],
+            kind='linear',
+            fill_value='extrapolate'
+        )
+        target_Sa = target_interp(match_periods)
+        
+        # Optimization objective
+        if method == 'least_squares':
+            objective = lambda sf: np.sum((sf * record_Sa - target_Sa)**2)
+        else:  # min_max
+            objective = lambda sf: np.max(np.abs(sf * record_Sa - target_Sa))
+        
+        # Optimize scale factor
+        result = minimize(objective, x0=1.0, bounds=[(0.1, 10.0)])
+        scale_factor = result.x[0]
+        
+        return scale_factor
+
+    def scale_all_records(self, fundamental_period, method='amplitude'):
+        """
+        Scale all loaded records according to BNBC requirements.
+        """
+        print(f"\n{'='*60}")
+        print(f"Scaling {len(self.records)} records using {method} method")
+        print(f"Fundamental Period: {fundamental_period}s")
+        print(f"Matching Period Range: {0.2*fundamental_period:.3f}s to {1.5*fundamental_period:.3f}s")
+        print(f"{'='*60}\n")
+        
+        scale_factors = []
+        
+        for i in range(len(self.records)):
+            if method == 'amplitude':
+                sf = self.amplitude_scaling(i, fundamental_period)
+            else:
+                sf = self.spectral_matching_scaling(i, fundamental_period)
+            
+            scale_factors.append(sf)
+            
+            # Store scaled acceleration
+            self.records[i]['scale_factor'] = sf
+            self.records[i]['scaled_acceleration'] = self.records[i]['acceleration'] * sf
+            
+            print(f"  {self.records[i]['name']}: SF = {sf:.3f}")
+        
+        print(f"\n✓ Scaling complete!")
+        print(f"  Mean Scale Factor: {np.mean(scale_factors):.3f}")
+        print(f"  Scale Factor Range: {np.min(scale_factors):.3f} to {np.max(scale_factors):.3f}")
+        
+        return scale_factors
+
+    def check_bnbc_compliance(self, fundamental_period):
+        """
+        Check if scaled records meet BNBC requirements.
+        """
+        print(f"\n{'='*60}")
+        print("BNBC COMPLIANCE CHECK")
+        print(f"{'='*60}\n")
+        
+        # Check number of records
+        num_records = len(self.records)
+        print(f"1. Number of Records: {num_records}")
+        print(f"   Required: ≥7, Recommended: ≥11")
+        
+        if num_records < 7:
+            print(f"   ❌ FAIL: Insufficient records")
+        elif num_records < 11:
+            print(f"   ⚠️  PASS: Meets minimum, but less than recommended")
+        else:
+            print(f"   ✓ PASS: Meets recommended count")
+        
+        # Period range
+        T_min = 0.2 * fundamental_period
+        T_max = 1.5 * fundamental_period
+        match_periods = np.linspace(T_min, T_max, 30)
+        
+        # Calculate average spectrum of scaled records
+        all_Sa = []
+        for record in self.records:
+            if 'scaled_acceleration' not in record:
+                print(f"\n   Warning: Record {record['name']} not scaled yet.")
+                continue
+            
+            Sa = self.calculate_response_spectrum(
+                record['scaled_acceleration'], record['dt'], match_periods
+            )
+            all_Sa.append(Sa)
+        
+        if len(all_Sa) == 0:
+            print("\n❌ No scaled records found!")
+            return None
+        
+        avg_Sa = np.mean(all_Sa, axis=0)
+        
+        # Target spectrum
+        target_interp = interp1d(
+            self.target_spectrum['periods'],
+            self.target_spectrum['Sa'],
+            kind='linear',
+            fill_value='extrapolate'
+        )
+        target_Sa = target_interp(match_periods)
+        
+        # Check: Average should not be less than 90% of target (BNBC criterion)
+        ratio = avg_Sa / target_Sa
+        min_ratio = np.min(ratio)
+        
+        print(f"\n2. Spectral Matching (0.2T to 1.5T range):")
+        print(f"   Average Spectrum / Target Spectrum")
+        print(f"   Minimum Ratio: {min_ratio:.3f} ({min_ratio*100:.1f}%)")
+        print(f"   Required: ≥0.90 (90%)")
+        
+        if min_ratio >= 0.90:
+            print(f"   ✓ PASS: Average spectrum meets target")
+        else:
+            print(f"   ❌ FAIL: Average spectrum below 90% of target")
+        
+        # Overall compliance
+        overall_compliant = (num_records >= 7) and (min_ratio >= 0.90)
+        
+        print(f"\n{'='*60}")
+        if overall_compliant:
+            print("OVERALL RESULT: ✓ COMPLIANT WITH BNBC REQUIREMENTS")
+        else:
+            print("OVERALL RESULT: ❌ NON-COMPLIANT")
+        print(f"{'='*60}\n")
+        
+        compliance = {
+            'num_records': num_records,
+            'min_required': 7,
+            'recommended': 11,
+            'min_ratio': min_ratio,
+            'required_ratio': 0.9,
+            'compliant': overall_compliant,
+            'periods': match_periods,
+            'avg_spectrum': avg_Sa,
+            'target_spectrum': target_Sa,
+            'ratio': ratio
+        }
+        
+        return compliance
+
+    def plot_results(self, fundamental_period, save_path=None):
+        """
+        Plot comprehensive scaling results.
+        """
+        fig = plt.figure(figsize=(16, 10))
+        gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
+        
+        # Period range
+        periods = np.logspace(-2, 1, 150)
+        T_min = 0.2 * fundamental_period
+        T_max = 1.5 * fundamental_period
+        
+        # Plot 1: Individual original spectra
+        ax1 = fig.add_subplot(gs[0, 0])
+        for record in self.records:
+            Sa = self.calculate_response_spectrum(
+                record['acceleration'], record['dt'], periods
+            )
+            ax1.loglog(periods, Sa, alpha=0.4, linewidth=1)
+        ax1.loglog(self.target_spectrum['periods'], self.target_spectrum['Sa'], 
+                   'r--', linewidth=2.5, label='BNBC Target')
+        ax1.set_xlabel('Period (s)', fontsize=10)
+        ax1.set_ylabel('Spectral Acceleration (g)', fontsize=10)
+        ax1.set_title('Original Response Spectra', fontweight='bold')
+        ax1.grid(True, alpha=0.3, which='both')
+        ax1.legend()
+        
+        # Plot 2: Individual scaled spectra
+        ax2 = fig.add_subplot(gs[0, 1])
+        for record in self.records:
+            if 'scaled_acceleration' not in record:
+                continue
+            Sa = self.calculate_response_spectrum(
+                record['scaled_acceleration'], record['dt'], periods
+            )
+            ax2.loglog(periods, Sa, alpha=0.5, linewidth=1.5, label=record['name'])
+        ax2.loglog(self.target_spectrum['periods'], self.target_spectrum['Sa'], 
+                   'r--', linewidth=2.5, label='BNBC Target')
+        ax2.axvline(T_min, color='green', linestyle=':', linewidth=2, label='0.2T')
+        ax2.axvline(T_max, color='blue', linestyle=':', linewidth=2, label='1.5T')
+        ax2.axvline(fundamental_period, color='purple', linestyle='-.', linewidth=2, label='T')
+        ax2.set_xlabel('Period (s)', fontsize=10)
+        ax2.set_ylabel('Spectral Acceleration (g)', fontsize=10)
+        ax2.set_title('Scaled Response Spectra', fontweight='bold')
+        ax2.grid(True, alpha=0.3, which='both')
+        ax2.legend(fontsize=7, ncol=2)
+        
+        # Plot 3: Average vs Target
+        ax3 = fig.add_subplot(gs[0, 2])
+        all_Sa = []
+        for record in self.records:
+            if 'scaled_acceleration' not in record:
+                continue
+            Sa = self.calculate_response_spectrum(
+                record['scaled_acceleration'], record['dt'], periods
+            )
+            all_Sa.append(Sa)
+            ax3.loglog(periods, Sa, 'gray', alpha=0.2, linewidth=1)
+        
+        if all_Sa:
+            avg_Sa = np.mean(all_Sa, axis=0)
+            ax3.loglog(periods, avg_Sa, 'b-', linewidth=3, label='Average Scaled', zorder=10)
+        ax3.loglog(self.target_spectrum['periods'], self.target_spectrum['Sa'],
+                  'r--', linewidth=2.5, label='BNBC Target', zorder=11)
+        ax3.axvline(T_min, color='green', linestyle=':', linewidth=2, alpha=0.7)
+        ax3.axvline(T_max, color='blue', linestyle=':', linewidth=2, alpha=0.7)
+        ax3.set_xlabel('Period (s)', fontsize=10)
+        ax3.set_ylabel('Spectral Acceleration (g)', fontsize=10)
+        ax3.set_title('Average Spectrum vs BNBC Target', fontweight='bold')
+        ax3.grid(True, alpha=0.3, which='both')
+        ax3.legend(fontsize=9)
+        
+        # Plot 4: Scale factors bar chart
+        ax4 = fig.add_subplot(gs[1, 0])
+        names = [r['name'] for r in self.records if 'scale_factor' in r]
+        sfs = [r['scale_factor'] for r in self.records if 'scale_factor' in r]
+        colors = plt.cm.viridis(np.linspace(0.2, 0.8, len(names)))
+        bars = ax4.bar(range(len(names)), sfs, color=colors, edgecolor='black', linewidth=1.5)
+        ax4.axhline(np.mean(sfs), color='red', linestyle='--', linewidth=2, label=f'Mean = {np.mean(sfs):.2f}')
+        ax4.set_xticks(range(len(names)))
+        ax4.set_xticklabels(names, rotation=45, ha='right', fontsize=8)
+        ax4.set_ylabel('Scale Factor', fontsize=10)
+        ax4.set_title('Scale Factors', fontweight='bold')
+        ax4.grid(True, alpha=0.3, axis='y')
+        ax4.legend()
+        
+        # Plot 5: Compliance ratio
+        ax5 = fig.add_subplot(gs[1, 1])
+        compliance = self.check_bnbc_compliance(fundamental_period)
+        
+        if compliance and 'ratio' in compliance:
+            ax5.plot(compliance['periods'], compliance['ratio'], 'b-', linewidth=2.5)
+            ax5.axhline(0.9, color='red', linestyle='--', linewidth=2, label='90% Threshold (Required)')
+            ax5.axhline(1.0, color='green', linestyle=':', linewidth=2, label='100% (Perfect Match)')
+            ax5.fill_between(compliance['periods'], 0.9, compliance['ratio'], 
+                            where=(compliance['ratio'] >= 0.9), alpha=0.3, color='green',
+                            label='Compliant Region')
+            ax5.set_xlabel('Period (s)', fontsize=10)
+            ax5.set_ylabel('Avg / Target Ratio', fontsize=10)
+            ax5.set_title('BNBC Compliance Check', fontweight='bold')
+            ax5.grid(True, alpha=0.3)
+            ax5.legend(fontsize=8)
+            ax5.set_ylim([0.7, 1.3])
+            
+            # Add status box
+            status = "✓ COMPLIANT" if compliance['compliant'] else "❌ NON-COMPLIANT"
+            color = 'lightgreen' if compliance['compliant'] else 'lightcoral'
+            ax5.text(0.5, 0.05, status, transform=ax5.transAxes,
+                    ha='center', va='bottom', fontsize=12, fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=0.5', facecolor=color, edgecolor='black', linewidth=2))
+        
+        # Plot 6: Sample time histories (original vs scaled)
+        ax6 = fig.add_subplot(gs[1, 2])
+        if len(self.records) > 0:
+            idx = 0  # Show first record
+            rec = self.records[idx]
+            t = rec['time']
+            ax6.plot(t, rec['acceleration'], 'b-', alpha=0.6, linewidth=1, label='Original')
+            if 'scaled_acceleration' in rec:
+                ax6.plot(t, rec['scaled_acceleration'], 'r-', alpha=0.8, linewidth=1.5, label='Scaled')
+            ax6.set_xlabel('Time (s)', fontsize=10)
+            ax6.set_ylabel('Acceleration (g)', fontsize=10)
+            ax6.set_title(f'Time History: {rec["name"]}', fontweight='bold')
+            ax6.grid(True, alpha=0.3)
+            ax6.legend()
+            ax6.set_xlim([0, min(30, rec['time'][-1])])  # Show first 30 seconds
+        
+        # Plot 7: PGA comparison
+        ax7 = fig.add_subplot(gs[2, 0])
+        names = [r['name'] for r in self.records if 'scaled_acceleration' in r]
+        original_pga = [np.max(np.abs(r['acceleration'])) for r in self.records if 'scaled_acceleration' in r]
+        scaled_pga = [np.max(np.abs(r['scaled_acceleration'])) for r in self.records if 'scaled_acceleration' in r]
+        
+        x = np.arange(len(names))
+        width = 0.35
+        ax7.bar(x - width/2, original_pga, width, label='Original PGA', alpha=0.7, color='steelblue')
+        ax7.bar(x + width/2, scaled_pga, width, label='Scaled PGA', alpha=0.7, color='coral')
+        ax7.set_xticks(x)
+        ax7.set_xticklabels(names, rotation=45, ha='right', fontsize=8)
+        ax7.set_ylabel('PGA (g)', fontsize=10)
+        ax7.set_title('Peak Ground Acceleration Comparison', fontweight='bold')
+        ax7.legend()
+        ax7.grid(True, alpha=0.3, axis='y')
+        
+        # Plot 8: Spectral statistics
+        ax8 = fig.add_subplot(gs[2, 1])
+        if all_Sa:
+            all_Sa_array = np.array(all_Sa)
+            mean_Sa = np.mean(all_Sa_array, axis=0)
+            std_Sa = np.std(all_Sa_array, axis=0)
+            
+            ax8.loglog(periods, mean_Sa, 'b-', linewidth=2.5, label='Mean')
+            ax8.fill_between(periods, mean_Sa - std_Sa, mean_Sa + std_Sa, 
+                            alpha=0.3, color='blue', label='±1 Std Dev')
+            ax8.loglog(self.target_spectrum['periods'], self.target_spectrum['Sa'],
+                      'r--', linewidth=2.5, label='Target')
+            ax8.set_xlabel('Period (s)', fontsize=10)
+            ax8.set_ylabel('Spectral Acceleration (g)', fontsize=10)
+            ax8.set_title('Statistical Variation of Scaled Spectra', fontweight='bold')
+            ax8.grid(True, alpha=0.3, which='both')
+            ax8.legend()
+        
+        # Plot 9: Summary table
+        ax9 = fig.add_subplot(gs[2, 2])
+        ax9.axis('off')
+        
+        # Create summary text
+        summary_text = f"""
+BNBC SCALING SUMMARY
+{'='*35}
+
+Site Parameters:
+  Seismic Zone Coefficient: S = {self.target_spectrum['S']:.2f}
+  Site Class Coefficients: Fa = {self.target_spectrum['Fa']:.2f}
+                          Fv = {self.target_spectrum['Fv']:.2f}
+  Design Spectral Accel:  SDS = {self.target_spectrum['SDS']:.3f}g
+                          SD1 = {self.target_spectrum['SD1']:.3f}g
+
+Structure:
+  Fundamental Period: T = {fundamental_period:.3f}s
+  Matching Range: {T_min:.3f}s to {T_max:.3f}s
+
+Scaling Results:
+  Number of Records: {len(self.records)}
+  Scale Factor Range: {np.min(sfs):.3f} - {np.max(sfs):.3f}
+  Mean Scale Factor: {np.mean(sfs):.3f}
+
+Compliance:
+  Records: {"✓ PASS" if len(self.records) >= 7 else "❌ FAIL"}
+  Spectrum Match: {"✓ PASS" if compliance and compliance['min_ratio'] >= 0.9 else "❌ FAIL"}
+  Overall: {"✓ COMPLIANT" if compliance and compliance['compliant'] else "❌ NON-COMPLIANT"}
+"""
+        
+        ax9.text(0.05, 0.95, summary_text, transform=ax9.transAxes,
+                fontsize=9, verticalalignment='top', fontfamily='monospace',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        
+        plt.suptitle('BNBC Ground Motion Scaling Analysis', 
+                    fontsize=16, fontweight='bold', y=0.98)
+        
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"\n✓ Figure saved to: {save_path}")
+        
+        plt.show()
+    
+    def export_scaled_records(self, output_dir='scaled_records'):
+        """
+        Export scaled ground motion records to files.
+        """
+        import os
+        
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        
+        print(f"\nExporting scaled records to '{output_dir}/'...")
+        
+        for i, record in enumerate(self.records):
+            if 'scaled_acceleration' not in record:
+                continue
+            
+            filename = f"{output_dir}/{record['name']}_scaled.txt"
+            
+            # Create header
+            header = f"""Ground Motion Record: {record['name']}
+Time Step (dt): {record['dt']} seconds
+Number of Points: {len(record['scaled_acceleration'])}
+Scale Factor: {record['scale_factor']:.6f}
+Duration: {len(record['scaled_acceleration']) * record['dt']:.2f} seconds
+PGA (Original): {np.max(np.abs(record['acceleration'])):.6f} g
+PGA (Scaled): {np.max(np.abs(record['scaled_acceleration'])):.6f} g
+
+Time(s)    Acceleration(g)"""
+            
+            # Prepare data
+            data = np.column_stack([record['time'], record['scaled_acceleration']])
+            
+            # Save to file
+            np.savetxt(filename, data, fmt='%.6f', header=header, comments='# ')
+            print(f"  ✓ {filename}")
+        
+        print(f"\n✓ Export complete! {len(self.records)} files saved.")
+
+
+# Complete main execution
 if __name__ == "__main__":
-    # Bangladesh parameters (Dhaka - Zone 4)
-    Z = 0.36      # Zone factor for Zone 4
-    I = 1.2       # Important building
-    R = 5.0       # Response reduction factor
-    Sa_g = 1.0    # Spectral acceleration coefficient
-    duration = 30.0  # seconds
-    dt = 0.01     # time step
-    site_class = 'D'  # Dhaka typical site class
+    print("="*70)
+    print(" PRODUCTION BNBC GROUND MOTION SCALING TOOL".center(70))
+    print(" Bangladesh National Building Code Compliance".center(70))
+    print("="*70)
     
-    # Target periods for spectrum matching
-    target_periods = np.array([0.00, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 
-                             0.50, 0.75, 1.00, 1.50, 2.00, 3.00, 4.00])
+    # Initialize production scaler
+    scaler = ProductionGroundMotionScaler(damping_ratio=0.05)
     
-    # Generate spectrum-compatible motion
-    acceleration, time = generate_spectrum_compatible_motion(
-        Z, I, R, Sa_g, duration, dt, site_class, target_periods
+    # Load ground motion records from local directory
+    print("\n[STEP 1] Loading Ground Motion Records from Local Directory...")
+    
+    try:
+        # Option 1: Load from directory with various formats
+        scaler.load_from_local_directory(
+            directory_path="./ground_motions/",  # Change to your directory
+            file_pattern="*.txt",               # Or "*.csv", "*.AT2", etc.
+            time_column=0,                      # Column index for time
+            accel_column=1,                     # Column index for acceleration
+            header_lines=0                      # Number of header lines to skip
+        )
+        
+        # Option 2: Or load PEER format specifically
+        # scaler.load_peer_format("./peer_records/")
+        
+        # Validate records
+        scaler.validate_records()
+        
+    except FileNotFoundError as e:
+        print(f"❌ Directory not found: {e}")
+        print("Creating sample directory structure for demonstration...")
+        
+        # Create sample directory structure
+        os.makedirs("./ground_motions/", exist_ok=True)
+        print("✓ Created ./ground_motions/ directory")
+        print("Please add your ground motion files to this directory and run again.")
+        exit()
+    
+    # Define BNBC target spectrum
+    print("\n[STEP 2] Defining BNBC Target Spectrum...")
+    # Example: Dhaka (Zone 2): S = 0.20
+    # Site Class D (Stiff Soil): Fa = 1.6, Fv = 2.4
+    S = 0.20      # Seismic coefficient for Zone 2 (Dhaka)
+    Fa = 1.6      # Site coefficient for short period (Site Class D)
+    Fv = 2.4      # Site coefficient for 1-sec period (Site Class D)
+    
+    periods, Sa = scaler.define_bnbc_target_spectrum(S=S, Fa=Fa, Fv=Fv)
+    
+    # Scale records
+    print("\n[STEP 3] Scaling Ground Motion Records...")
+    fundamental_period = 1.0  # Example: 1.0 second building period
+    
+    scale_factors = scaler.scale_all_records(
+        fundamental_period=fundamental_period, 
+        method='amplitude'  # or 'spectral_matching'
     )
     
-    # Save to file for OpenSees analysis
-    np.savetxt('bnbc_dhaka_zone4_classD.txt', acceleration)
+    # Check BNBC compliance
+    print("\n[STEP 4] Checking BNBC Compliance...")
+    compliance = scaler.check_bnbc_compliance(fundamental_period)
     
-    print("Spectrum-compatible ground motion generated successfully!")
-    print(f"File saved: bnbc_dhaka_zone4_classD.txt")
-    print(f"PGA: {np.max(np.abs(acceleration)):.3f}g")
+    # Export scaled records
+    print("\n[STEP 5] Exporting Scaled Records...")
+    scaler.export_scaled_records(output_dir='scaled_records')
+    
+    # Plot comprehensive results
+    print("\n[STEP 6] Generating Plots...")
+    scaler.plot_results(fundamental_period, save_path='bnbc_scaling_results.png')
+    
+    print("\n" + "="*70)
+    print(" PRODUCTION ANALYSIS COMPLETE ".center(70))
+    print("="*70)
+    print("\nGenerated Files:")
+    print("  1. scaled_records/*.txt - Scaled acceleration time histories")
+    print("  2. bnbc_scaling_results.png - Comprehensive analysis plots")
+    print("\nThis analysis is suitable for:")
+    print("  • Real engineering projects")
+    print("  • BNBC-compliant structural design")
+    print("  • Seismic performance evaluation")
+    print("  • Building permit applications")
+    print("="*70)
